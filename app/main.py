@@ -14,9 +14,16 @@ from pathlib import Path
 # Initialize app
 app = FastAPI()
 
-# --- Serve frontend ---
-app.mount("/static", StaticFiles(directory="static"), name="static")
-templates = Jinja2Templates(directory="templates")
+# --- Paths (make sure they point to app/static and app/templates) ---
+BASE_DIR = Path(__file__).resolve().parent
+
+app.mount(
+    "/static",
+    StaticFiles(directory=BASE_DIR / "static"),
+    name="static"
+)
+
+templates = Jinja2Templates(directory=BASE_DIR / "templates")
 
 @app.get("/", response_class=HTMLResponse)
 def serve_index(request: Request):
