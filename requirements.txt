@@ -1,1 +1,11 @@
 Requirements.txt
+
+fastapi
+uvicorn
+openai
+chromadb
+pypdf
+langchain-core
+langchain
+langchain-text-splitters
+python-multipart
