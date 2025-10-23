@@ -7,3 +7,4 @@ langchain-core
 langchain
 langchain-text-splitters
 python-multipart
+jinja2
