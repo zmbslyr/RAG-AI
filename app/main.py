@@ -1,44 +1,90 @@
 # app/main.py
-from fastapi import FastAPI, UploadFile, Form
-from fastapi.responses import JSONResponse
-import openai, chromadb
-from pypdf import PdfReader
+
+from fastapi import FastAPI, UploadFile, Form, Request
+from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+
+import chromadb
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+from pypdf import PdfReader
+from openai import OpenAI
+from pathlib import Path
 
-openai.api_key = "YOUR_OPENAI_API_KEY"
-
+# Initialize app
 app = FastAPI()
-client = chromadb.PersistentClient(path="chroma/")
-collection = client.get_or_create_collection("pdf_docs")
 
-# Helper: extract + split text
+# --- Serve frontend ---
+app.mount("/static", StaticFiles(directory="static"), name="static")
+templates = Jinja2Templates(directory="templates")
+
+@app.get("/", response_class=HTMLResponse)
+def serve_index(request: Request):
+    return templates.TemplateResponse("index.html", {"request": request})
+
+# --- OpenAI + Chroma setup ---
+openai_api_key = "YOUR_OPENAI_API_KEY"
+client_openai = OpenAI(api_key=openai_api_key)
+
+chroma_client = chromadb.PersistentClient(path="chroma/")
+collection = chroma_client.get_or_create_collection("pdf_docs")
+
+# --- Helper: extract + split text from PDF ---
 def process_pdf(file: UploadFile):
-    pdf = PdfReader(file.file)
-    text = " ".join(page.extract_text() for page in pdf.pages if page.extract_text())
-    splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
+    reader = PdfReader(file.file)
+    text = ""
+    for page in reader.pages:
+        text += page.extract_text() or ""
+    splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
     chunks = splitter.split_text(text)
     return chunks
 
-@app.post("/upload_pdf")
+# --- Route: upload PDF and store embeddings ---
+@app.post("/upload")
 async def upload_pdf(file: UploadFile):
     chunks = process_pdf(file)
-    for idx, chunk in enumerate(chunks):
-        emb = openai.embeddings.create(input=chunk, model="text-embedding-3-small")["data"][0]["embedding"]
-        collection.add(ids=[f"{file.filename}-{idx}"], documents=[chunk], embeddings=[emb], metadatas=[{"source": file.filename}])
-    return {"message": f"Stored {len(chunks)} chunks from {file.filename}"}
+    embeddings = []
 
-@app.post("/query")
-async def query_rag(query: str = Form(...)):
-    query_emb = openai.embeddings.create(input=query, model="text-embedding-3-small")["data"][0]["embedding"]
-    results = collection.query(query_embeddings=[query_emb], n_results=5)
+    # Generate embeddings via OpenAI
+    for chunk in chunks:
+        emb = client_openai.embeddings.create(
+            model="text-embedding-3-small",
+            input=chunk
+        ).data[0].embedding
+        embeddings.append(emb)
 
-    context = "\n".join(results["documents"][0])
-    completion = openai.chat.completions.create(
+    # Add to Chroma
+    ids = [f"{file.filename}-{i}" for i in range(len(chunks))]
+    collection.add(
+        ids=ids,
+        embeddings=embeddings,
+        metadatas=[{"source": file.filename}] * len(chunks),
+        documents=chunks
+    )
+    return {"message": f"Uploaded and processed {file.filename}", "chunks": len(chunks)}
+
+# --- Route: ask question ---
+@app.post("/ask")
+async def ask_question(query: str = Form(...)):
+    # Create embedding for user question
+    query_embedding = client_openai.embeddings.create(
+        model="text-embedding-3-small",
+        input=query
+    ).data[0].embedding
+
+    # Search in ChromaDB
+    results = collection.query(query_embeddings=[query_embedding], n_results=5)
+    retrieved_docs = results["documents"][0]
+    context = "\n\n".join(retrieved_docs)
+
+    # Ask LLM with context
+    completion = client_openai.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
-            {"role": "system", "content": "You are a research assistant that uses the provided context."},
+            {"role": "system", "content": "You are an assistant that answers questions based on given documents."},
             {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {query}"}
         ]
     )
+
     answer = completion.choices[0].message.content
     return JSONResponse({"answer": answer})
