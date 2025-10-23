@@ -3,7 +3,7 @@ from fastapi import FastAPI, UploadFile, Form
 from fastapi.responses import JSONResponse
 import openai, chromadb
 from pypdf import PdfReader
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 openai.api_key = "YOUR_OPENAI_API_KEY"
 
