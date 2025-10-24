@@ -14,6 +14,12 @@ from pathlib import Path
 from dotenv import load_dotenv
 import os
 
+# Optional: for RTF support
+try:
+    import striprtf
+except ImportError:
+    striprtf = None
+
 load_dotenv() # Load variables from .env
 api_key = os.getenv("OPENAI_API_KEY") #gets the API key from the .env file
 
@@ -51,19 +57,49 @@ chroma_client = chromadb.PersistentClient(path="chroma/")
 collection = chroma_client.get_or_create_collection("pdf_docs")
 
 # --- Helper: extract + split text from PDF ---
-def process_pdf(file: UploadFile):
-    reader = PdfReader(file.file)
-    text = ""
-    for page in reader.pages:
-        text += page.extract_text() or ""
-    splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
-    chunks = splitter.split_text(text)
-    return chunks
+def extract_text(file: UploadFile) -> str:
+    filename = file.filename.lower()
 
-# --- Route: upload PDF and store embeddings ---
+    # PDF
+    if filename.endswith(".pdf"):
+        reader = PdfReader(file.file)
+        text = ""
+        for page in reader.pages:
+            text += page.extract_text() or ""
+        return text
+
+    # Plain text / UTF-8
+    elif filename.endswith((".txt", ".utf-8")):
+        content = file.file.read()
+        try:
+            return content.decode("utf-8")
+        except UnicodeDecodeError:
+            return content.decode("latin-1", errors="ignore")
+
+    # RTF
+    elif filename.endswith(".rtf"):
+        if not striprtf:
+            raise RuntimeError("striprtf package not installed. Run `pip install striprtf`.")
+        raw_data = file.file.read().decode("utf-8", errors="ignore")
+        return striprtf.striprtf.rtf_to_text(raw_data)
+
+    # Fallback: try generic UTF-8 read
+    else:
+        content = file.file.read()
+        try:
+            return content.decode("utf-8")
+        except Exception:
+            return ""
+
+def split_text_into_chunks(text: str):
+    splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
+    return splitter.split_text(text)
+
+# --- Route: upload any supported file and store embeddings ---
 @app.post("/upload")
-async def upload_pdf(file: UploadFile):
-    chunks = process_pdf(file)
+async def upload_file(file: UploadFile):
+    text = extract_text(file)
+    chunks = split_text_into_chunks(text)
     embeddings = []
 
     # Generate embeddings via OpenAI
@@ -100,7 +136,7 @@ async def ask_question(query: str = Form(...)):
 
     # Ask LLM with context
     completion = client_openai.chat.completions.create(
-        model="gpt-4o-mini",
+        model="gpt-4o",
         messages=[
             {"role": "system", "content": "You are an assistant that answers questions based on given documents."},
             {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {query}"}

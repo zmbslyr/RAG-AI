@@ -1,41 +1,42 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
   <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>RAG PDF Assistant</title>
+    <link rel="stylesheet" href="/static/style.css" />
   </head>
   <body>
-    <h1>Upload PDF</h1>
-    <form id="uploadForm" enctype="multipart/form-data">
-      <input type="file" name="file" />
-      <button type="submit">Upload</button>
-    </form>
+    <div class="container">
+      <header>
+        <h1>RAG PDF Assistant</h1>
+      </header>
 
-    <h1>Ask Question</h1>
-    <form id="askForm">
-      <input type="text" name="query" placeholder="Ask something..." />
-      <button type="submit">Ask</button>
-    </form>
+      <section class="upload-section">
+        <h2>Upload PDF / Text File</h2>
+        <form id="uploadForm" enctype="multipart/form-data">
+          <input type="file" id="pdfFile" name="file" accept=".pdf,.txt,.rtf,.utf-8" required />
+          <button type="submit">Upload</button>
+        </form>
 
-    <pre id="response"></pre>
+        <!-- Spinner & Processing Text -->
+        <div id="processingContainer" class="processing-container" style="display:none;">
+          <div class="spinner"></div>
+          <div class="processing-text">Processing<span id="dots"></span></div>
+        </div>
 
-    <script>
-      const uploadForm = document.getElementById("uploadForm");
-      uploadForm.onsubmit = async (e) => {
-        e.preventDefault();
-        const formData = new FormData(uploadForm);
-        const res = await fetch("/upload", { method: "POST", body: formData });
-        const data = await res.json();
-        alert(data.message);
-      };
+        <p id="uploadStatus"></p>
+      </section>
 
-      const askForm = document.getElementById("askForm");
-      askForm.onsubmit = async (e) => {
-        e.preventDefault();
-        const formData = new FormData(askForm);
-        const res = await fetch("/ask", { method: "POST", body: formData });
-        const data = await res.json();
-        document.getElementById("response").textContent = data.answer;
-      };
-    </script>
+      <section class="chat-section">
+        <div id="chatLog" class="chat-log"></div>
+        <form id="askForm" class="chat-input">
+          <input type="text" id="query" name="query" placeholder="Ask something..." autocomplete="off" required />
+          <button type="submit">Send</button>
+        </form>
+      </section>
+    </div>
+
+    <script src="/static/script.js"></script>
   </body>
 </html>
