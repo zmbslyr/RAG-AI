@@ -11,6 +11,14 @@ from pypdf import PdfReader
 from openai import OpenAI
 from pathlib import Path
 
+from dotenv import load_dotenv
+import os
+
+load_dotenv() # Load variables from .env
+api_key = os.getenv("OPENAI_API_KEY")
+
+print("Loaded API key:", api_key) # Verify API key is loaded
+
 # Initialize app
 app = FastAPI()
 
@@ -30,7 +38,7 @@ def serve_index(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
 
 # --- OpenAI + Chroma setup ---
-openai_api_key = "YOUR_OPENAI_API_KEY"
+openai_api_key = api_key
 client_openai = OpenAI(api_key=openai_api_key)
 
 chroma_client = chromadb.PersistentClient(path="chroma/")

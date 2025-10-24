@@ -1,0 +1,8 @@
+app/secretAPI.env
+.env
+app/__pycache__/main.cpython-310.pyc
+chroma/chroma.sqlite3
+chroma/81429733-346f-4ea5-a1f9-b1218ad505ff/data_level0.bin
+chroma/81429733-346f-4ea5-a1f9-b1218ad505ff/header.bin
+chroma/81429733-346f-4ea5-a1f9-b1218ad505ff/length.bin
+chroma/81429733-346f-4ea5-a1f9-b1218ad505ff/link_lists.bin
