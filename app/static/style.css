@@ -1,6 +1,6 @@
 body {
   font-family: Arial, sans-serif;
-  background: #f7f8fa;
+  background: #343435;
   margin: 0;
   padding: 0;
   display: flex;
@@ -118,6 +118,46 @@ header {
   padding: 10px;
   border-radius: 8px;
   border: 1px solid #ccc;
+}
+
+.chat-input textarea {
+  flex-grow: 1;
+  padding: 10px;
+  border-radius: 8px;
+  border: 1px solid #ccc;
+  resize: none;              /* prevents manual resizing */
+  height: 40px;              /* start small */
+  min-height: 40px;
+  max-height: 120px;         /* stop growing after 3–4 lines */
+  overflow-y: auto;          /* scroll if text exceeds max height */
+  font-family: inherit;
+  font-size: 1rem;
+  line-height: 1.4;
+}
+
+/* Chrome, Edge, Safari */
+.chat-input textarea::-webkit-scrollbar {
+  width: 6px;             /* slimmer scrollbar */
+}
+
+.chat-input textarea::-webkit-scrollbar-track {
+  background: #f1f1f1;    /* track background */
+  border-radius: 3px;
+}
+
+.chat-input textarea::-webkit-scrollbar-thumb {
+  background: #2d6cdf;    /* thumb color */
+  border-radius: 3px;
+}
+
+.chat-input textarea::-webkit-scrollbar-thumb:hover {
+  background: #1f4fbf;    /* hover color */
+}
+
+/* Firefox */
+.chat-input textarea {
+  scrollbar-width: thin;
+  scrollbar-color: #2d6cdf #f1f1f1; /* thumb then track */
 }
 
 .chat-input button {

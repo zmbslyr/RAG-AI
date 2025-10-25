@@ -76,3 +76,17 @@ function removeLastAssistantMessage() {
     }
   }
 }
+
+const queryBox = document.getElementById("query");
+queryBox.addEventListener("input", () => {
+  queryBox.style.height = "auto"; // reset first
+  queryBox.style.height = Math.min(queryBox.scrollHeight, 120) + "px";
+});
+
+// Send chat when Enter is pressed (Shift+Enter for newline)
+queryBox.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();      // prevent adding a newline
+    askForm.requestSubmit(); // triggers your existing onsubmit handler
+  }
+});

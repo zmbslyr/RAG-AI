@@ -100,6 +100,12 @@ def split_text_into_chunks(text: str):
 async def upload_file(file: UploadFile):
     text = extract_text(file)
     chunks = split_text_into_chunks(text)
+
+    # Prepend headers to each chunk
+    total_chunks = len(chunks)
+    for i, chunk in enumerate(chunks, start=1):
+        chunks[i-1] = f"File: {file.filename}\nChunk: {i}/{total_chunks}\n{chunk}"
+    
     embeddings = []
 
     # Generate embeddings via OpenAI
@@ -112,10 +118,19 @@ async def upload_file(file: UploadFile):
 
     # Add to Chroma
     ids = [f"{file.filename}-{i}" for i in range(len(chunks))]
+    metadatas = [
+        {
+            "source": file.filename,
+            "chunk_index": i,
+            "file_id": f"{file.filename}"
+        }
+        for i in range(len(chunks))
+    ]
+
     collection.add(
         ids=ids,
         embeddings=embeddings,
-        metadatas=[{"source": file.filename}] * len(chunks),
+        metadatas=metadatas,
         documents=chunks
     )
     return {"message": f"Uploaded and processed {file.filename}", "chunks": len(chunks)}
@@ -130,18 +145,109 @@ async def ask_question(query: str = Form(...)):
     ).data[0].embedding
 
     # Search in ChromaDB
-    results = collection.query(query_embeddings=[query_embedding], n_results=5)
-    retrieved_docs = results["documents"][0]
-    context = "\n\n".join(retrieved_docs)
+    results = collection.query(
+        query_embeddings=[query_embedding],
+        n_results=15,  # increase if you want more candidates
+        include=["documents", "metadatas"]
+    )
 
+    # Chroma returns lists per query; we only have one query, so index 0
+    retrieved_docs = results.get("documents", [[]])[0]
+    retrieved_metas = results.get("metadatas", [[]])[0]
+
+    # Return if no documents
+    if not retrieved_docs:
+        return JSONResponse({"answer": "No relevant documents found."})
+
+    # Group the retrieved chunks by file_id (fallback to source if no file_id)
+    grouped = {}
+    for doc, meta, in zip(retrieved_docs, retrieved_metas):
+        file_id = meta.get("file_id") if isinstance(meta, dict) else None
+        source = meta.get("source") if isinstance(meta, dict) else None
+        chunk_index = meta.get("chunk_index", 0) if isinstance(meta, dict) else 0
+        key = file_id or source or "unknown-file"
+        if key not in grouped:
+            grouped[key] = {
+                "file_id": file_id,
+                "source": source,
+                "chunks": []
+            }
+        grouped[key]["chunks"].append({"text": doc,"chunk_index": chunk_index})
+
+    # --- Sort chunks by chunk_index before combining ---
+    for info in grouped.values():
+        info["chunks"].sort(key=lambda c: c["chunk_index"])
+
+    # Build a well-structured context string with clear separators and headers
+    context_parts = []
+    for idx, (fid, info) in enumerate(grouped.items(), start=1):
+        header = f"=== DOCUMENT {idx} ===\nFilename: {info.get('source')}\nFile ID: {info.get('file_id')}\n---\n"
+        # join chunks for this file (you could sort by chunk index if you stored it in metadata/ids)
+        file_text = "\n\n--- End of chunk ---\n\n".join([c["text"] for c in info["chunks"]])
+        context_parts.append(header + file_text)
+    context = "\n\n\n".join(context_parts)
+
+    # 6) Strong system prompt instructing the model to pay attention to file headers
+    system_message = (
+        "You are an assistant that answers questions using only the provided document excerpts. "
+        "Each document is separated and labeled with Filename."
+        "When you reference or compare material, explicitly mention the Filename so sources are clear."
+        "You are allowed to use your electrical engineering knowledge to help you, but not your knowledge of specific manufacturer components."
+    )
+
+    """
     # Ask LLM with context
     completion = client_openai.chat.completions.create(
         model="gpt-4o",
         messages=[
-            {"role": "system", "content": "You are an assistant that answers questions based on given documents."},
+            {"role": "system", "content": "You are an assistant that answers questions based on given documents. Each document is seperated by headers. Keep sources distinct and refer to their filenames when comparing or summarizing."},
             {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {query}"}
         ]
     )
 
     answer = completion.choices[0].message.content
     return JSONResponse({"answer": answer})
+    """
+
+ # 7) Ask the LLM with the grouped context
+    completion = client_openai.chat.completions.create(
+        model="gpt-4o",
+        messages=[
+            {"role": "system", "content": system_message},
+            {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {query}"}
+        ]
+    )
+
+    answer = completion.choices[0].message.content
+    # 8) For traceability, also return which file IDs were included in the context
+    included_files = [{"file_id": info.get("file_id"), "filename": info.get("source")} for info in grouped.values()]
+
+    return JSONResponse({
+        "answer": answer,
+        "used_files": included_files
+    })
+
+
+# --- Route: list all unique files in vector database ---
+@app.get("/list_files")
+async def list_files():
+    # Retrieve all metadata stored in the collection
+    results = collection.get()
+
+    if not results or not results.get("metadatas"):
+        return {"message": "No files found in the vector database.", "count": 0}
+
+    # Flatten metadata list (Chroma returns list of lists)
+    all_metadata = results.get("metadatas", [])
+    # Extract unique file IDs and filenames
+    unique_files = {}
+    for meta in all_metadata:
+        source = meta.get("source", "unknown")
+        file_id = meta.get("file_id", "unknown")
+        unique_files[file_id] = source
+
+    return {
+        "message": "Unique files currently stored in the vector database.",
+        "count": len(unique_files),
+        "files": [{"file_id": fid, "filename": name} for fid, name in unique_files.items()]
+    }

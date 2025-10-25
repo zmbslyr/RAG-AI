@@ -23,6 +23,9 @@ Thumbs.db
 chroma/
 chroma.sqlite3
 
+# --- ChromaDB databases backed up ---
+databases/
+
 # --- Logs / Cache ---
 *.log
 *.tmp
