@@ -56,6 +56,46 @@ client_openai = OpenAI(api_key=openai_api_key)
 chroma_client = chromadb.PersistentClient(path="chroma/")
 collection = chroma_client.get_or_create_collection("pdf_docs")
 
+# --- Helper: extract + split text from text file. Return pages and text ---
+def extract_text(file: UploadFile):
+    filename = file.filename.lower()
+
+    # PDF
+    if filename.endswith(".pdf"):
+        reader = PdfReader(file.file)
+        pages = []
+        for page_number, page in enumerate(reader.pages, start=1):  # start=1 for human-readable pages
+            text = page.extract_text() or ""
+            pages.append((page_number, text))
+        return pages  # list of (page_number, text) tuples
+
+    # Plain text / UTF-8
+    elif filename.endswith((".txt", ".utf-8")):
+        content = file.file.read()
+        try:
+            text = content.decode("utf-8")
+        except UnicodeDecodeError:
+            text = content.decode("latin-1", errors="ignore")
+        return [(1, text)]  # single pseudo-page
+
+    # RTF
+    elif filename.endswith(".rtf"):
+        if not striprtf:
+            raise RuntimeError("striprtf package not installed. Run `pip install striprtf`.")
+        raw_data = file.file.read().decode("utf-8", errors="ignore")
+        text = striprtf.striprtf.rtf_to_text(raw_data)
+        return [(1, text)]  # single pseudo-page
+
+    else:
+        # Fallback
+        content = file.file.read()
+        try:
+            text = content.decode("utf-8")
+        except Exception:
+            text = ""
+        return [(1, text)]
+
+"""
 # --- Helper: extract + split text from PDF ---
 def extract_text(file: UploadFile) -> str:
     filename = file.filename.lower()
@@ -90,11 +130,60 @@ def extract_text(file: UploadFile) -> str:
             return content.decode("utf-8")
         except Exception:
             return ""
+"""
 
 def split_text_into_chunks(text: str):
     splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
     return splitter.split_text(text)
 
+
+# --- Route: upload any supported file and store embeddings ---
+@app.post("/upload")
+async def upload_file(file: UploadFile):
+    pages = extract_text(file)  # for PDFs returns [(page_number, text), ...]; for TXT/RTF returns [(1, text)]
+
+    ids = []
+    metadatas = []
+    documents = []
+    embeddings = []
+
+    for page_number, page_text in pages:
+        # Treat each page as a single chunk
+        chunk_text = page_text.strip()
+        if not chunk_text:
+            continue  # skip empty pages
+
+        # Metadata includes file name, file_id, page number
+        meta = {
+            "source": file.filename,
+            "file_id": file.filename,
+            "page": page_number
+        }
+
+        # Generate embedding for this page
+        emb = client_openai.embeddings.create(
+            model="text-embedding-3-small",
+            input=chunk_text
+        ).data[0].embedding
+
+        # Append to lists
+        ids.append(f"{file.filename}-page-{page_number}")
+        metadatas.append(meta)
+        documents.append(chunk_text)
+        embeddings.append(emb)
+
+    # Add all pages to Chroma
+    collection.add(
+        ids=ids,
+        embeddings=embeddings,
+        metadatas=metadatas,
+        documents=documents
+    )
+
+    return {"message": f"Uploaded and processed {file.filename}", "pages": len(documents)}
+
+
+"""
 # --- Route: upload any supported file and store embeddings ---
 @app.post("/upload")
 async def upload_file(file: UploadFile):
@@ -134,6 +223,7 @@ async def upload_file(file: UploadFile):
         documents=chunks
     )
     return {"message": f"Uploaded and processed {file.filename}", "chunks": len(chunks)}
+"""
 
 # --- Route: ask question ---
 @app.post("/ask")
@@ -172,26 +262,46 @@ async def ask_question(query: str = Form(...)):
                 "source": source,
                 "chunks": []
             }
-        grouped[key]["chunks"].append({"text": doc,"chunk_index": chunk_index})
+        grouped[key]["chunks"].append({"text": doc,"chunk_index": chunk_index,"page": meta.get("page", "unknown")})
 
     # --- Sort chunks by chunk_index before combining ---
     for info in grouped.values():
-        info["chunks"].sort(key=lambda c: c["chunk_index"])
+        info["chunks"].sort(key=lambda c: (c["chunk_index"], c["chunk_index"]))
 
     # Build a well-structured context string with clear separators and headers
     context_parts = []
     for idx, (fid, info) in enumerate(grouped.items(), start=1):
-        header = f"=== DOCUMENT {idx} ===\nFilename: {info.get('source')}\nFile ID: {info.get('file_id')}\n---\n"
-        # join chunks for this file (you could sort by chunk index if you stored it in metadata/ids)
-        file_text = "\n\n--- End of chunk ---\n\n".join([c["text"] for c in info["chunks"]])
+        # File header
+        header = (
+            f"=== DOCUMENT {idx} ===\n"
+            f"Filename: {info.get('source')}\n"
+            f"File ID: {info.get('file_id')}\n"
+            f"Total Pages: {max(c.get('page', c.get('chunk_index', 0)) for c in info['chunks'])}\n"
+            f"---\n"
+        )
+        # Add each chunk with page info clearly separated
+        chunk_texts = []
+        for c in info["chunks"]:
+            page = c.get("page", 0)
+            chunk_index = c.get("chunk_index", 0)
+            chunk_texts.append(f"--- FILE: {info.get('source')} | PAGE: {page} ---\n {c['text']}")
+    
+        # Join chunks with a clear separator
+        file_text = "\n\n".join(chunk_texts)
         context_parts.append(header + file_text)
+
     context = "\n\n\n".join(context_parts)
+
 
     # 6) Strong system prompt instructing the model to pay attention to file headers
     system_message = (
         "You are an assistant that answers questions using only the provided document excerpts. "
-        "Each document is separated and labeled with Filename."
-        "When you reference or compare material, explicitly mention the Filename so sources are clear."
+        "Each page starts with '--- FILE: <filename> | PAGE: <number> ---'."
+        "Always refer to these PAGE numbers when asked about a specific page. "
+        "Do not assume pages exist if not listed, and do not invent content. "
+        "When comparing multiple documents, explicitly mention Filename and Page numbers."
+        "When asked about content on a specific page, or the number of pages, you must use these Page numbers. "
+        "When you reference or compare material, explicitly mention the Filename and Page numbers so sources are clear."
         "You are allowed to use your electrical engineering knowledge to help you, but not your knowledge of specific manufacturer components."
     )
 

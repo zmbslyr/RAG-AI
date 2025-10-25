@@ -41,7 +41,7 @@ askForm.onsubmit = async (e) => {
   appendMessage("user", query);
   queryInput.value = "";
 
-  appendMessage("assistant", "Thinking...");
+  const thinkingMsg = appendThinkingMessage();
 
   const formData = new FormData();
   formData.append("query", query);
@@ -70,8 +70,10 @@ function appendMessage(role, text) {
 function removeLastAssistantMessage() {
   const messages = chatLog.getElementsByClassName("message");
   for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i].classList.contains("assistant")) {
-      messages[i].remove();
+    const msg = messages[i];
+    if (msg.classList.contains("assistant")) {
+      if (msg.dotInterval) clearInterval(msg.dotInterval);
+      msg.remove();
       break;
     }
   }
@@ -90,3 +92,25 @@ queryBox.addEventListener("keydown", (e) => {
     askForm.requestSubmit(); // triggers your existing onsubmit handler
   }
 });
+
+function appendThinkingMessage() {
+  const msg = document.createElement("div");
+  msg.className = "message assistant";
+  msg.innerHTML = `<div class="bubble">Thinking<span class="thinking-dots"></span></div>`;
+  chatLog.appendChild(msg);
+  chatLog.scrollTop = chatLog.scrollHeight;
+
+  // Animate ellipsis in thinking bubble
+  let dotCount = 0;
+  const interval = setInterval(() => {
+    dotCount = (dotCount + 1) % 4; // cycles 0,1,2,3
+    const dots = msg.querySelector(".thinking-dots");
+    if (dots) {
+      dots.textContent = ".".repeat(dotCount);
+    }
+  }, 400);
+
+  // store so we can clear it later when removing the message
+  msg.dotInterval = interval;
+  return msg;
+}
