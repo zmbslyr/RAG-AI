@@ -9,3 +9,4 @@ langchain-text-splitters
 python-multipart
 jinja2
 striprtf
+markdown
