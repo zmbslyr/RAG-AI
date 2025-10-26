@@ -10,6 +10,9 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from pypdf import PdfReader
 from openai import OpenAI
 from pathlib import Path
+import re
+import markdown
+import json
 
 from dotenv import load_dotenv
 import os
@@ -162,7 +165,7 @@ async def upload_file(file: UploadFile):
 
         # Generate embedding for this page
         emb = client_openai.embeddings.create(
-            model="text-embedding-3-small",
+            model="text-embedding-3-large",
             input=chunk_text
         ).data[0].embedding
 
@@ -200,7 +203,7 @@ async def upload_file(file: UploadFile):
     # Generate embeddings via OpenAI
     for chunk in chunks:
         emb = client_openai.embeddings.create(
-            model="text-embedding-3-small",
+            model="text-embedding-3-large",
             input=chunk
         ).data[0].embedding
         embeddings.append(emb)
@@ -228,18 +231,38 @@ async def upload_file(file: UploadFile):
 # --- Route: ask question ---
 @app.post("/ask")
 async def ask_question(query: str = Form(...)):
-    # Create embedding for user question
-    query_embedding = client_openai.embeddings.create(
-        model="text-embedding-3-small",
-        input=query
-    ).data[0].embedding
 
-    # Search in ChromaDB
-    results = collection.query(
-        query_embeddings=[query_embedding],
-        n_results=15,  # increase if you want more candidates
-        include=["documents", "metadatas"]
-    )
+    # Detect if the user is requesting a specific page
+    page_match = re.search(r"page\s+(\d+)", query, re.IGNORECASE)
+    if page_match:
+        target_page = int(page_match.group(1))
+
+        # Generate a 1536-dim embedding for the dummy query
+        query_embedding = client_openai.embeddings.create(
+            model="text-embedding-3-large",
+            input="page lookup"
+        ).data[0].embedding
+
+        # Directly retrieve chunk from metadata instead of embedding query
+        results = collection.query(
+            query_embeddings=[query_embedding],
+            where={"$or": [{"page": target_page}, {"page": str(target_page)}]},
+            n_results=1,
+            include=["documents", "metadatas"]
+        )
+    else:
+        # Create embedding for user question
+        query_embedding = client_openai.embeddings.create(
+            model="text-embedding-3-large",
+            input=query
+        ).data[0].embedding
+
+        # Search in ChromaDB
+        results = collection.query(
+            query_embeddings=[query_embedding],
+            n_results=15,  # increase if you want more candidates
+            include=["documents", "metadatas"]
+        )
 
     # Chroma returns lists per query; we only have one query, so index 0
     retrieved_docs = results.get("documents", [[]])[0]
@@ -292,7 +315,6 @@ async def ask_question(query: str = Form(...)):
 
     context = "\n\n\n".join(context_parts)
 
-
     # 6) Strong system prompt instructing the model to pay attention to file headers
     system_message = (
         "You are an assistant that answers questions using only the provided document excerpts. "
@@ -319,6 +341,8 @@ async def ask_question(query: str = Form(...)):
     return JSONResponse({"answer": answer})
     """
 
+    print(f"Initial Context\n{context}\nAdditional Prompting:\n{system_message}\n")
+
  # 7) Ask the LLM with the grouped context
     completion = client_openai.chat.completions.create(
         model="gpt-4o",
@@ -328,12 +352,20 @@ async def ask_question(query: str = Form(...)):
         ]
     )
 
-    answer = completion.choices[0].message.content
+    #answer = completion.choices[0].message.content
     # 8) For traceability, also return which file IDs were included in the context
     included_files = [{"file_id": info.get("file_id"), "filename": info.get("source")} for info in grouped.values()]
 
+    answer_markdown = completion.choices[0].message.content
+
+    # Convert ChatGPT Markdown to HTML
+    answer_html = markdown.markdown(
+        answer_markdown,
+        extensions=["fenced_code", "tables", "codehilite"]
+    )
+
     return JSONResponse({
-        "answer": answer,
+        "answer": answer_html,
         "used_files": included_files
     })
 
