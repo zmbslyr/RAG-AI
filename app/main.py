@@ -4,6 +4,7 @@ from fastapi import FastAPI, UploadFile, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from fastapi.testclient import TestClient
 
 import chromadb
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -16,6 +17,10 @@ import json
 
 from dotenv import load_dotenv
 import os
+
+# Initialize global variable for files position in database
+#global db_place
+#db_place = 0
 
 # Optional: for RTF support
 try:
@@ -143,7 +148,23 @@ def split_text_into_chunks(text: str):
 # --- Route: upload any supported file and store embeddings ---
 @app.post("/upload")
 async def upload_file(file: UploadFile):
+
+    # Check to see if there is a collection. If there is, increment 'db_place', else set to 0
+    if collection:
+        results = collection.get()
+        all_metadata = results.get("metadatas", [])
+        # Extract unique file IDs and filenames
+        unique_files = {}
+        for meta in all_metadata:
+            source = meta.get("source", "unknown")
+            file_id = meta.get("file_id", "unknown")
+            unique_files[file_id] = source
+        db_place = len(unique_files) + 1
+    else:
+        db_place = 0
+
     pages = extract_text(file)  # for PDFs returns [(page_number, text), ...]; for TXT/RTF returns [(1, text)]
+    max_pages = len(pages)
 
     ids = []
     metadatas = []
@@ -159,10 +180,12 @@ async def upload_file(file: UploadFile):
         # Metadata includes file name, file_id, page number
         meta = {
             "source": file.filename,
-            "file_id": file.filename,
-            "page": page_number
+            "file_id": Path(file.filename).stem,
+            "place": db_place,
+            "page": page_number,
+            "pages": max_pages
         }
-
+        print(f"\n\n {meta} \n\n")
         # Generate embedding for this page
         emb = client_openai.embeddings.create(
             model="text-embedding-3-large",
@@ -170,7 +193,8 @@ async def upload_file(file: UploadFile):
         ).data[0].embedding
 
         # Append to lists
-        ids.append(f"{file.filename}-page-{page_number}")
+        unique_prefix = f"{file.filename}-{os.urandom(4).hex()}"
+        ids.append(f"{unique_prefix}-page-{page_number}")
         metadatas.append(meta)
         documents.append(chunk_text)
         embeddings.append(emb)
@@ -227,6 +251,15 @@ async def upload_file(file: UploadFile):
     )
     return {"message": f"Uploaded and processed {file.filename}", "chunks": len(chunks)}
 """
+
+# --- Internal helper: call /list_files route from inside the app ---
+client_local = TestClient(app)
+
+async def call_list_files_route():
+    """Call the existing /list_files route and return its JSON."""
+    response = client_local.get("/list_files")
+    return response.json()
+
 
 # --- Route: ask question ---
 @app.post("/ask")
@@ -296,18 +329,22 @@ async def ask_question(query: str = Form(...)):
     for idx, (fid, info) in enumerate(grouped.items(), start=1):
         # File header
         header = (
-            f"=== DOCUMENT {idx} ===\n"
+            f"=== {fid} ===\n"
+            f"\n"
             f"Filename: {info.get('source')}\n"
             f"File ID: {info.get('file_id')}\n"
+            f"Place: {info.get('place')}\n"
             f"Total Pages: {max(c.get('page', c.get('chunk_index', 0)) for c in info['chunks'])}\n"
-            f"---\n"
+            f"=== {fid} ===\n"
         )
         # Add each chunk with page info clearly separated
         chunk_texts = []
         for c in info["chunks"]:
-            page = c.get("page", 0)
+            page = c.get("page", "unknown")
+            pages = c.get("pages", "unknown")
+            place = c.get("place", "unknown")
             chunk_index = c.get("chunk_index", 0)
-            chunk_texts.append(f"--- FILE: {info.get('source')} | PAGE: {page} ---\n {c['text']}")
+            chunk_texts.append(f"--- FILE: {info.get('source')} | PAGE: {page} of {pages} | PLACE: {place} ---\n {c['text']}")
     
         # Join chunks with a clear separator
         file_text = "\n\n".join(chunk_texts)
@@ -318,7 +355,8 @@ async def ask_question(query: str = Form(...)):
     # 6) Strong system prompt instructing the model to pay attention to file headers
     system_message = (
         "You are an assistant that answers questions using only the provided document excerpts. "
-        "Each page starts with '--- FILE: <filename> | PAGE: <number> ---'."
+        "Each page starts with '--- FILE: <filename> | PAGE: <number> of <number> | PLACE: <number> ---'."
+        "The number in PLACE represents the files location in the database."
         "Always refer to these PAGE numbers when asked about a specific page. "
         "Do not assume pages exist if not listed, and do not invent content. "
         "When comparing multiple documents, explicitly mention Filename and Page numbers."
@@ -341,22 +379,73 @@ async def ask_question(query: str = Form(...)):
     return JSONResponse({"answer": answer})
     """
 
-    print(f"Initial Context\n{context}\nAdditional Prompting:\n{system_message}\n")
+    # --- Define tools (functions) the LLM can call ---
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "list_files",
+                "description": "Return the list of all files currently stored in the vector database, including their names and count.",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+    ]
 
- # 7) Ask the LLM with the grouped context
+    # If context is huge, truncate it unless needed
+    if len(context) > 10000 and re.search(r"\b(list|show|many?)\b", query, re.IGNORECASE):
+        context = "(context skipped — file listing not content-based)"
+        system_message = "( no system message needed )"
+
+
+    # 7) Ask the LLM with the grouped context
     completion = client_openai.chat.completions.create(
         model="gpt-4o",
         messages=[
             {"role": "system", "content": system_message},
             {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {query}"}
-        ]
+        ],
+        tools=tools,
+        tool_choice="auto"
     )
+    print(f"Initial Context\n{context}\nAdditional Prompting:\n{system_message}\n")
 
-    #answer = completion.choices[0].message.content
+    
     # 8) For traceability, also return which file IDs were included in the context
     included_files = [{"file_id": info.get("file_id"), "filename": info.get("source")} for info in grouped.values()]
 
-    answer_markdown = completion.choices[0].message.content
+    message = completion.choices[0].message
+
+    # --- Handle if the model wants to call a function ---
+    if getattr(message, "tool_calls", None):
+        tool_call = message.tool_calls[0]
+        func_name = tool_call.function.name
+        if func_name == "list_files":
+            files_info = await call_list_files_route()
+            result_text = (
+                f"There are {files_info.get('count', 0)} files in the database:\n" +
+                "\n".join(f"- {f['filename']}" for f in files_info.get("files", []))
+            )
+
+            # Feed the result back for a natural final answer
+            second_response = client_openai.chat.completions.create(
+                model="gpt-4o",
+                messages=[
+                    {"role": "system", "content": system_message},
+                    {"role": "user", "content": query},
+                    message,  # the tool call
+                    {
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "content": result_text,
+                    },
+                ],
+            )
+            answer_markdown = second_response.choices[0].message.content
+        else:
+            answer_markdown = message.content or ""
+    else:
+        answer_markdown = message.content or ""
+
 
     # Convert ChatGPT Markdown to HTML
     answer_html = markdown.markdown(
@@ -386,10 +475,27 @@ async def list_files():
     for meta in all_metadata:
         source = meta.get("source", "unknown")
         file_id = meta.get("file_id", "unknown")
+        pages = meta.get("pages", "unknown")
+        place = meta.get("place", "unknown")
         unique_files[file_id] = source
+
+    print("\n\nPAGES: ", pages, "\n\n")
 
     return {
         "message": "Unique files currently stored in the vector database.",
         "count": len(unique_files),
-        "files": [{"file_id": fid, "filename": name} for fid, name in unique_files.items()]
+        "files": [{"file_id": fid, "filename": name} for fid, name in unique_files.items()],
+        "pages": pages,
+        "place": place
     }
+
+@app.get("/debug_metadata")
+async def debug_metadata():
+    """Inspect what metadata actually exists inside Chroma."""
+    results = collection.get(include=["metadatas", "documents"], limit=5)
+    metas = results.get("metadatas", [])
+    print("\n\n=== METADATA DEBUG ===")
+    for i, m in enumerate(metas[:10]):
+        print(f"[{i}] {m}")
+    print("======================\n\n")
+    return metas
