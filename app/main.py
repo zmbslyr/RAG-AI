@@ -14,13 +14,15 @@ from pathlib import Path
 import re
 import markdown
 import json
-
+from difflib import get_close_matches
 from dotenv import load_dotenv
 import os
 
-# Initialize global variable for files position in database
-#global db_place
-#db_place = 0
+import importlib
+import pkgutil
+
+from app import routes
+from app.config import collection
 
 # Optional: for RTF support
 try:
@@ -31,10 +33,16 @@ except ImportError:
 load_dotenv() # Load variables from .env
 api_key = os.getenv("OPENAI_API_KEY") #gets the API key from the .env file
 
-print("Loaded API key:", api_key) # Verify API key is loaded DO NOT KEEP THIS IS PRODUCTION CODE
+print("Loaded API key.") # Verify API key is loaded DO NOT KEEP THIS IS PRODUCTION CODE
 
 # Initialize app
 app = FastAPI()
+
+# Dynamically load all routes in app/routes
+for _, module_name, _ in pkgutil.iter_modules(routes.__path__):
+    module = importlib.import_module(f"app.routes.{module_name}")
+    if hasattr(module, "router"):
+        app.include_router(module.router)
 
 # --- Paths (make sure they point to app/static and app/templates) ---
 #__file__ refers to the current file 
@@ -61,8 +69,10 @@ def serve_index(request: Request): #The request object is created and passed to 
 openai_api_key = api_key
 client_openai = OpenAI(api_key=openai_api_key)
 
-chroma_client = chromadb.PersistentClient(path="chroma/")
-collection = chroma_client.get_or_create_collection("pdf_docs")
+# === OLD CHROMA INITIALIZATION. NEW IMPLEMENTATION IN config.py ===
+#chroma_client = chromadb.PersistentClient(path="chroma/")
+#collection = chroma_client.get_or_create_collection("pdf_docs")
+# ==================================================================
 
 # --- Helper: extract + split text from text file. Return pages and text ---
 def extract_text(file: UploadFile):
@@ -102,43 +112,6 @@ def extract_text(file: UploadFile):
         except Exception:
             text = ""
         return [(1, text)]
-
-"""
-# --- Helper: extract + split text from PDF ---
-def extract_text(file: UploadFile) -> str:
-    filename = file.filename.lower()
-
-    # PDF
-    if filename.endswith(".pdf"):
-        reader = PdfReader(file.file)
-        text = ""
-        for page in reader.pages:
-            text += page.extract_text() or ""
-        return text
-
-    # Plain text / UTF-8
-    elif filename.endswith((".txt", ".utf-8")):
-        content = file.file.read()
-        try:
-            return content.decode("utf-8")
-        except UnicodeDecodeError:
-            return content.decode("latin-1", errors="ignore")
-
-    # RTF
-    elif filename.endswith(".rtf"):
-        if not striprtf:
-            raise RuntimeError("striprtf package not installed. Run `pip install striprtf`.")
-        raw_data = file.file.read().decode("utf-8", errors="ignore")
-        return striprtf.striprtf.rtf_to_text(raw_data)
-
-    # Fallback: try generic UTF-8 read
-    else:
-        content = file.file.read()
-        try:
-            return content.decode("utf-8")
-        except Exception:
-            return ""
-"""
 
 def split_text_into_chunks(text: str):
     splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
@@ -209,49 +182,6 @@ async def upload_file(file: UploadFile):
 
     return {"message": f"Uploaded and processed {file.filename}", "pages": len(documents)}
 
-
-"""
-# --- Route: upload any supported file and store embeddings ---
-@app.post("/upload")
-async def upload_file(file: UploadFile):
-    text = extract_text(file)
-    chunks = split_text_into_chunks(text)
-
-    # Prepend headers to each chunk
-    total_chunks = len(chunks)
-    for i, chunk in enumerate(chunks, start=1):
-        chunks[i-1] = f"File: {file.filename}\nChunk: {i}/{total_chunks}\n{chunk}"
-    
-    embeddings = []
-
-    # Generate embeddings via OpenAI
-    for chunk in chunks:
-        emb = client_openai.embeddings.create(
-            model="text-embedding-3-large",
-            input=chunk
-        ).data[0].embedding
-        embeddings.append(emb)
-
-    # Add to Chroma
-    ids = [f"{file.filename}-{i}" for i in range(len(chunks))]
-    metadatas = [
-        {
-            "source": file.filename,
-            "chunk_index": i,
-            "file_id": f"{file.filename}"
-        }
-        for i in range(len(chunks))
-    ]
-
-    collection.add(
-        ids=ids,
-        embeddings=embeddings,
-        metadatas=metadatas,
-        documents=chunks
-    )
-    return {"message": f"Uploaded and processed {file.filename}", "chunks": len(chunks)}
-"""
-
 # --- Internal helper: call /list_files route from inside the app ---
 client_local = TestClient(app)
 
@@ -265,37 +195,70 @@ async def call_list_files_route():
 @app.post("/ask")
 async def ask_question(query: str = Form(...)):
 
-    # Detect if the user is requesting a specific page
+    # 1. Detect a page number (like "page 3")
     page_match = re.search(r"page\s+(\d+)", query, re.IGNORECASE)
-    if page_match:
-        target_page = int(page_match.group(1))
+    page_num = int(page_match.group(1)) if page_match else None
 
-        # Generate a 1536-dim embedding for the dummy query
-        query_embedding = client_openai.embeddings.create(
-            model="text-embedding-3-large",
-            input="page lookup"
-        ).data[0].embedding
-
-        # Directly retrieve chunk from metadata instead of embedding query
-        results = collection.query(
-            query_embeddings=[query_embedding],
-            where={"$or": [{"page": target_page}, {"page": str(target_page)}]},
-            n_results=1,
-            include=["documents", "metadatas"]
-        )
+    # 2. Detect a filename (quoted or capitalized)
+    file_match = re.search(r'["“”](.+?)["“”]', query)  # match text in quotes
+    if file_match:
+        file_query = file_match.group(1).strip()
     else:
-        # Create embedding for user question
-        query_embedding = client_openai.embeddings.create(
-            model="text-embedding-3-large",
-            input=query
-        ).data[0].embedding
+        # fallback heuristic for unquoted titles: consecutive capitalized words
+        possible_name = re.search(r'([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,4})', query)
+        file_query = possible_name.group(1).strip() if possible_name else None
 
-        # Search in ChromaDB
-        results = collection.query(
-            query_embeddings=[query_embedding],
-            n_results=15,  # increase if you want more candidates
-            include=["documents", "metadatas"]
-        )
+    # 3. If a file name was detected, try to match it to known sources
+    matched_file = None
+    if file_query:
+        # Get all known sources in Chroma metadata
+        all_files = {
+            m.get("source") for m in collection.get(include=["metadatas"])["metadatas"]
+            if m.get("source")
+        }
+
+        # DEBUG: show available files
+        all_files = {
+            m.get("source") for m in collection.get(include=["metadatas"])["metadatas"]
+            if m.get("source")
+        }
+        print("\n[DEBUG] Available file sources in collection:")
+        for f in all_files:
+            print(f"  ->", f)
+
+        matches = get_close_matches(file_query, all_files, n=1, cutoff=0.5)
+        if matches:
+            matched_file = matches[0]
+
+    # 4. Create appropriate query embedding
+    query_embedding = client_openai.embeddings.create(
+        model="text-embedding-3-large",
+        input="page lookup" if page_num else query
+    ).data[0].embedding
+
+    # 5. Build metadata filter dynamically
+    filters = {}
+    if matched_file:
+        filters["source"] = matched_file
+    if page_num:
+        filters["$or"] = [{"page": page_num}, {"page": str(page_num)}]
+
+    # 6. Query Chroma with these filters
+    results = collection.query(
+        query_embeddings=[query_embedding],
+        where=filters if filters else None,
+        n_results=10,
+        include=["documents", "metadatas"]
+    )
+
+    # Optional debug info
+    print(f"\n[Stage E+] Filters applied: {filters or 'None'}")
+    if matched_file:
+        print(f"Matched file: {matched_file}")
+    if page_num:
+        print(f"Matched page: {page_num}")
+    print()
+
 
     # Chroma returns lists per query; we only have one query, so index 0
     retrieved_docs = results.get("documents", [[]])[0]
@@ -304,6 +267,36 @@ async def ask_question(query: str = Form(...)):
     # Return if no documents
     if not retrieved_docs:
         return JSONResponse({"answer": "No relevant documents found."})
+
+    # Get all metadata from the collection so the LLM knows every file and its page count
+    all_results = collection.get(include=["metadatas"])
+    all_metas = all_results.get("metadatas", [])
+
+    # Build an index of file_id → {source, pages, place}
+    file_index = {}
+    for m in all_metas:
+        fid = m.get("file_id", "unknown")
+        if fid not in file_index:
+            file_index[fid] = {
+                "source": m.get("source", "unknown"),
+                "pages": m.get("pages", "unknown"),
+                "place": m.get("place", "unknown")
+            }
+
+    # Merge known metadata (pages, place) into every meta that lacks it
+    for m in retrieved_metas:
+        fid = m.get("file_id", "unknown")
+        if fid in file_index:
+            for key in ("pages", "place", "source"):
+                if m.get(key) in (None, "unknown"):
+                    m[key] = file_index[fid][key]
+
+    # Optional debug print
+    print("\n[Stage E] File index summary:")
+    for fid, info in file_index.items():
+        print(f"  {fid}: pages={info['pages']}, place={info['place']}, source={info['source']}")
+    print()
+
 
     # Group the retrieved chunks by file_id (fallback to source if no file_id)
     grouped = {}
@@ -316,7 +309,9 @@ async def ask_question(query: str = Form(...)):
             grouped[key] = {
                 "file_id": file_id,
                 "source": source,
-                "chunks": []
+                "chunks": [],
+                "place": meta.get("place", "unknown"),
+                "pages": meta.get("pages", "unknown")
             }
         grouped[key]["chunks"].append({"text": doc,"chunk_index": chunk_index,"page": meta.get("page", "unknown")})
 
@@ -327,6 +322,12 @@ async def ask_question(query: str = Form(...)):
     # Build a well-structured context string with clear separators and headers
     context_parts = []
     for idx, (fid, info) in enumerate(grouped.items(), start=1):
+        representative_page = (
+            info["chunks"][0].get("page")
+            if info.get("chunks") and isinstance(info["chunks"], list) and len(info["chunks"]) > 0
+            else "unknown"
+        )
+
         # File header
         header = (
             f"=== {fid} ===\n"
@@ -334,17 +335,18 @@ async def ask_question(query: str = Form(...)):
             f"Filename: {info.get('source')}\n"
             f"File ID: {info.get('file_id')}\n"
             f"Place: {info.get('place')}\n"
-            f"Total Pages: {max(c.get('page', c.get('chunk_index', 0)) for c in info['chunks'])}\n"
+            f"Page: {representative_page}\n"
+            f"Total Pages: {info.get('pages')}\n"
             f"=== {fid} ===\n"
         )
         # Add each chunk with page info clearly separated
         chunk_texts = []
         for c in info["chunks"]:
             page = c.get("page", "unknown")
-            pages = c.get("pages", "unknown")
-            place = c.get("place", "unknown")
+            pages = info.get("pages", "unknown")
+            place = info.get("place", "unknown")
             chunk_index = c.get("chunk_index", 0)
-            chunk_texts.append(f"--- FILE: {info.get('source')} | PAGE: {page} of {pages} | PLACE: {place} ---\n {c['text']}")
+            chunk_texts.append(f"\n--- FILE: {info.get('source')} | PAGE: {page} of {pages} | PLACE: {place} ---\n\n {c['text']}")
     
         # Join chunks with a clear separator
         file_text = "\n\n".join(chunk_texts)
@@ -364,20 +366,6 @@ async def ask_question(query: str = Form(...)):
         "When you reference or compare material, explicitly mention the Filename and Page numbers so sources are clear."
         "You are allowed to use your electrical engineering knowledge to help you, but not your knowledge of specific manufacturer components."
     )
-
-    """
-    # Ask LLM with context
-    completion = client_openai.chat.completions.create(
-        model="gpt-4o",
-        messages=[
-            {"role": "system", "content": "You are an assistant that answers questions based on given documents. Each document is seperated by headers. Keep sources distinct and refer to their filenames when comparing or summarizing."},
-            {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {query}"}
-        ]
-    )
-
-    answer = completion.choices[0].message.content
-    return JSONResponse({"answer": answer})
-    """
 
     # --- Define tools (functions) the LLM can call ---
     tools = [
@@ -457,37 +445,6 @@ async def ask_question(query: str = Form(...)):
         "answer": answer_html,
         "used_files": included_files
     })
-
-
-# --- Route: list all unique files in vector database ---
-@app.get("/list_files")
-async def list_files():
-    # Retrieve all metadata stored in the collection
-    results = collection.get()
-
-    if not results or not results.get("metadatas"):
-        return {"message": "No files found in the vector database.", "count": 0}
-
-    # Flatten metadata list (Chroma returns list of lists)
-    all_metadata = results.get("metadatas", [])
-    # Extract unique file IDs and filenames
-    unique_files = {}
-    for meta in all_metadata:
-        source = meta.get("source", "unknown")
-        file_id = meta.get("file_id", "unknown")
-        pages = meta.get("pages", "unknown")
-        place = meta.get("place", "unknown")
-        unique_files[file_id] = source
-
-    print("\n\nPAGES: ", pages, "\n\n")
-
-    return {
-        "message": "Unique files currently stored in the vector database.",
-        "count": len(unique_files),
-        "files": [{"file_id": fid, "filename": name} for fid, name in unique_files.items()],
-        "pages": pages,
-        "place": place
-    }
 
 @app.get("/debug_metadata")
 async def debug_metadata():
