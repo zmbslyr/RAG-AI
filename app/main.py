@@ -42,16 +42,3 @@ templates = Jinja2Templates(directory=BASE_DIR / "templates")
 @app.get("/", response_class=HTMLResponse) #FastAPI expects JSON by default so we must specify HTML
 def serve_index(request: Request): #The request object is created and passed to this function in the background by FastAPI, populated by the HTTP metadata
     return templates.TemplateResponse("index.html", {"request": request})
-
-
-# MOSTLY VESTIGIAL. Working on a more thorough debug route, with better display parameters
-@app.get("/debug_metadata")
-async def debug_metadata():
-    """Inspect what metadata actually exists inside Chroma."""
-    results = collection.get(include=["metadatas", "documents"], limit=5)
-    metas = results.get("metadatas", [])
-    print("\n\n=== METADATA DEBUG ===")
-    for i, m in enumerate(metas[:10]):
-        print(f"[{i}] {m}")
-    print("======================\n\n")
-    return metas
