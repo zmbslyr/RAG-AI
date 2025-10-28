@@ -1,6 +1,8 @@
+# app/routes/ask_question.py
 from fastapi import APIRouter, Form
 from fastapi.responses import JSONResponse
 import re
+import json
 import markdown
 from difflib import get_close_matches
 from openai import OpenAI
@@ -16,6 +18,23 @@ async def call_list_files_route():
     """Call the existing /list_files route and return its JSON."""
     response = client_local.get("/list_files")
     return response.json()
+
+# --- Helper: fuzzy-match a partial query to DB filenames ---
+async def find_best_file_match_func(query: str):
+    """
+    Given a partial or paraphrased title, returns the best matching filenames
+    from the available filenames in the database (via list_files).
+    """
+    files_info = await call_list_files_route()
+    filenames = [f.get("filename") for f in files_info.get("files", []) if f.get("filename")]
+    if not filenames:
+        return []
+
+    # Match against lowercase variants but return original-cased filenames
+    lc_map = {fn.lower(): fn for fn in filenames}
+    matches_lc = get_close_matches(query.lower(), list(lc_map.keys()), n=3, cutoff=0.4)
+    mapped_matches = [lc_map[k] for k in matches_lc]
+    return mapped_matches
 
 router = APIRouter()
 
@@ -36,23 +55,16 @@ async def ask_question(query: str = Form(...)):
         possible_name = re.search(r'([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,4})', query)
         file_query = possible_name.group(1).strip() if possible_name else None
 
-    # 3. If a file name was detected, try to match it to known sources
+    # 3. If a file name was detected, try to match it to known sources (best-effort)
     matched_file = None
     if file_query:
-        # Get all known sources in Chroma metadata
-        all_files = {
-            m.get("source") for m in collection.get(include=["metadatas"])["metadatas"]
-            if m.get("source")
-        }
-
-        # DEBUG: show available files
         all_files = {
             m.get("source") for m in collection.get(include=["metadatas"])["metadatas"]
             if m.get("source")
         }
         print("\n[DEBUG] Available file sources in collection:")
         for f in all_files:
-            print(f"  ->", f)
+            print(f"  -> {f}")
 
         matches = get_close_matches(file_query, all_files, n=1, cutoff=0.5)
         if matches:
@@ -80,13 +92,12 @@ async def ask_question(query: str = Form(...)):
     )
 
     # Optional debug info
-    print(f"\n[Stage E+] Filters applied: {filters or 'None'}")
+    print(f"\n[DEBUG] Filters applied: {filters or 'None'}")
     if matched_file:
         print(f"Matched file: {matched_file}")
     if page_num:
         print(f"Matched page: {page_num}")
     print()
-
 
     # Chroma returns lists per query; we only have one query, so index 0
     retrieved_docs = results.get("documents", [[]])[0]
@@ -96,20 +107,20 @@ async def ask_question(query: str = Form(...)):
     if not retrieved_docs:
         return JSONResponse({"answer": "No relevant documents found."})
 
-    # Get all metadata from the collection so the LLM knows every file and its page count
-    all_results = collection.get(include=["metadatas"])
-    all_metas = all_results.get("metadatas", [])
-
-    # Build an index of file_id → {source, pages, place}
-    file_index = {}
-    for m in all_metas:
-        fid = m.get("file_id", "unknown")
-        if fid not in file_index:
-            file_index[fid] = {
-                "source": m.get("source", "unknown"),
-                "pages": m.get("pages", "unknown"),
-                "place": m.get("place", "unknown")
-            }
+    # Get full file metadata via list_files route (smarter and consistent)
+    files_info = await call_list_files_route()
+    file_index = {
+        f.get("file_id", "unknown"): {
+            "source": f.get("filename", "unknown"),
+            "pages": f.get("total_pages", "unknown"),
+            "place": f.get("place", "unknown")
+        }
+        for f in files_info.get("files", [])
+    }
+    print("\n[DEBUG] File metadata index from list_files:")
+    for fid, info in file_index.items():
+        print(f"  {fid}: {info}")
+    print("\n")
 
     # Merge known metadata (pages, place) into every meta that lacks it
     for m in retrieved_metas:
@@ -125,10 +136,9 @@ async def ask_question(query: str = Form(...)):
         print(f"  {fid}: pages={info['pages']}, place={info['place']}, source={info['source']}")
     print()
 
-
     # Group the retrieved chunks by file_id (fallback to source if no file_id)
     grouped = {}
-    for doc, meta, in zip(retrieved_docs, retrieved_metas):
+    for doc, meta in zip(retrieved_docs, retrieved_metas):
         file_id = meta.get("file_id") if isinstance(meta, dict) else None
         source = meta.get("source") if isinstance(meta, dict) else None
         chunk_index = meta.get("chunk_index", 0) if isinstance(meta, dict) else 0
@@ -141,7 +151,11 @@ async def ask_question(query: str = Form(...)):
                 "place": meta.get("place", "unknown"),
                 "pages": meta.get("pages", "unknown")
             }
-        grouped[key]["chunks"].append({"text": doc,"chunk_index": chunk_index,"page": meta.get("page", "unknown")})
+        grouped[key]["chunks"].append({
+            "text": doc,
+            "chunk_index": chunk_index,
+            "page": meta.get("page", "unknown")
+        })
 
     # --- Sort chunks by chunk_index before combining ---
     for info in grouped.values():
@@ -174,8 +188,10 @@ async def ask_question(query: str = Form(...)):
             pages = info.get("pages", "unknown")
             place = info.get("place", "unknown")
             chunk_index = c.get("chunk_index", 0)
-            chunk_texts.append(f"\n--- FILE: {info.get('source')} | PAGE: {page} of {pages} | PLACE: {place} ---\n\n {c['text']}")
-    
+            chunk_texts.append(
+                f"\n--- FILE: {info.get('source')} | PAGE: {page} of {pages} | PLACE: {place} ---\n\n{c['text']}"
+            )
+
         # Join chunks with a clear separator
         file_text = "\n\n".join(chunk_texts)
         context_parts.append(header + file_text)
@@ -185,14 +201,13 @@ async def ask_question(query: str = Form(...)):
     # 6) Strong system prompt instructing the model to pay attention to file headers
     system_message = (
         "You are an assistant that answers questions using only the provided document excerpts. "
-        "Each page starts with '--- FILE: <filename> | PAGE: <number> of <number> | PLACE: <number> ---'."
-        "The number in PLACE represents the files location in the database."
+        "Each page starts with '--- FILE: <filename> | PAGE: <number> of <number> | PLACE: <number> ---'. "
+        "The number in PLACE represents the files location in the database. "
         "Always refer to these PAGE numbers when asked about a specific page. "
         "Do not assume pages exist if not listed, and do not invent content. "
-        "When comparing multiple documents, explicitly mention Filename and Page numbers."
+        "When comparing multiple documents, explicitly mention Filename and Page numbers. "
         "When asked about content on a specific page, or the number of pages, you must use these Page numbers. "
         "When you reference or compare material, explicitly mention the Filename and Page numbers so sources are clear."
-        "You are allowed to use your electrical engineering knowledge to help you, but not your knowledge of specific manufacturer components."
     )
 
     # --- Define tools (functions) the LLM can call ---
@@ -201,9 +216,22 @@ async def ask_question(query: str = Form(...)):
             "type": "function",
             "function": {
                 "name": "list_files",
-                "description": "Return the list of all files currently stored in the vector database, including their names and count.",
-                "parameters": {"type": "object", "properties": {}},
+                "description": "Return detailed metadata for all files (filename, total_pages, place, file_id).",
             },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "find_best_file_match",
+                "description": "Given a partial title, return best matching filenames from the DB.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "partial or vague title"}
+                    },
+                    "required": ["query"]
+                }
+            }
         }
     ]
 
@@ -211,7 +239,6 @@ async def ask_question(query: str = Form(...)):
     if len(context) > 10000 and re.search(r"\b(list|show|many?)\b", query, re.IGNORECASE):
         context = "(context skipped — file listing not content-based)"
         system_message = "( no system message needed )"
-
 
     # 7) Ask the LLM with the grouped context
     completion = client_openai.chat.completions.create(
@@ -225,43 +252,76 @@ async def ask_question(query: str = Form(...)):
     )
     print(f"Initial Context\n{context}\nAdditional Prompting:\n{system_message}\n")
 
-    
     # 8) For traceability, also return which file IDs were included in the context
     included_files = [{"file_id": info.get("file_id"), "filename": info.get("source")} for info in grouped.values()]
 
     message = completion.choices[0].message
 
-    # --- Handle if the model wants to call a function ---
+    # --- Handle if the model wants to call one or more functions (tool_calls) ---
     if getattr(message, "tool_calls", None):
-        tool_call = message.tool_calls[0]
-        func_name = tool_call.function.name
-        if func_name == "list_files":
-            files_info = await call_list_files_route()
-            result_text = (
-                f"There are {files_info.get('count', 0)} files in the database:\n" +
-                "\n".join(f"- {f['filename']}" for f in files_info.get("files", []))
-            )
+        tool_messages = []
 
-            # Feed the result back for a natural final answer
-            second_response = client_openai.chat.completions.create(
-                model="gpt-4o",
-                messages=[
-                    {"role": "system", "content": system_message},
-                    {"role": "user", "content": query},
-                    message,  # the tool call
-                    {
-                        "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "content": result_text,
-                    },
-                ],
-            )
-            answer_markdown = second_response.choices[0].message.content
-        else:
-            answer_markdown = message.content or ""
+        # loop all tool calls and prepare a tool response for each
+        for tool_call in message.tool_calls:
+            func_name = tool_call.function.name
+
+            if func_name == "list_files":
+                # return rich metadata lines
+                files_info = await call_list_files_route()
+                result_lines = []
+                for f in files_info.get("files", []):
+                    filename = f.get("filename", "unknown")
+                    total_pages = f.get("total_pages", "unknown")
+                    place = f.get("place", "unknown")
+                    result_lines.append(f"- {filename} — Total Pages: {total_pages} — Place: {place}")
+                result_text = (
+                    f"There are {files_info.get('count', 0)} files in the database.\n\n"
+                    f"Here are their details:\n" + "\n".join(result_lines)
+                )
+                tool_messages.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call.id,
+                    "content": result_text,
+                })
+
+            elif func_name == "find_best_file_match":
+                # tool_call.function.arguments is a JSON string; parse safely
+                args_raw = getattr(tool_call.function, "arguments", "{}")
+                try:
+                    args = json.loads(args_raw)
+                except Exception:
+                    args = {}
+                query_str = args.get("query", "")
+                matches = await find_best_file_match_func(query_str)
+                result_text = f"Best matches for '{query_str}': {matches}"
+                tool_messages.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call.id,
+                    "content": result_text,
+                })
+
+            else:
+                # unrecognized tool - respond with a safe default
+                tool_messages.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call.id,
+                    "content": f"No handler implemented for tool '{func_name}'."
+                })
+
+        # Now feed all tool responses back to the model at once
+        second_response = client_openai.chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {"role": "system", "content": system_message},
+                {"role": "user", "content": query},
+                message,   # assistant message containing tool_calls
+                *tool_messages,
+            ],
+        )
+        answer_markdown = second_response.choices[0].message.content
+
     else:
         answer_markdown = message.content or ""
-
 
     # Convert ChatGPT Markdown to HTML
     answer_html = markdown.markdown(
