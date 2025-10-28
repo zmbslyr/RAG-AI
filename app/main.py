@@ -1,25 +1,17 @@
 # app/main.py
 
-from fastapi import FastAPI, UploadFile, Form, Request
+from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from fastapi.testclient import TestClient
 
-
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from pypdf import PdfReader
-from openai import OpenAI
 from pathlib import Path
-from difflib import get_close_matches
-from dotenv import load_dotenv
-import os
 
 import importlib
 import pkgutil
 
 from app import routes
-from app.config import client_openai, collection
+from app.config import collection
 
 # Initialize app
 app = FastAPI()
@@ -51,6 +43,8 @@ templates = Jinja2Templates(directory=BASE_DIR / "templates")
 def serve_index(request: Request): #The request object is created and passed to this function in the background by FastAPI, populated by the HTTP metadata
     return templates.TemplateResponse("index.html", {"request": request})
 
+
+# MOSTLY VESTIGIAL. Working on a more thorough debug route, with better display parameters
 @app.get("/debug_metadata")
 async def debug_metadata():
     """Inspect what metadata actually exists inside Chroma."""
