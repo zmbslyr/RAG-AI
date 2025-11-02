@@ -35,6 +35,13 @@ app.mount(
     name="static"
 )
 
+# --- Mount uploaded files so PDFs can be viewed ---
+app.mount(
+    "/uploads",
+    StaticFiles(directory="uploads"),
+    name="uploads"
+)
+
 # templates is an object that allows jinja to know wherer to read templates from
 templates = Jinja2Templates(directory=BASE_DIR / "templates")
 

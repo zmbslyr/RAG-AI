@@ -1,5 +1,6 @@
 from fastapi import APIRouter, UploadFile
 from pathlib import Path
+import shutil
 import os
 
 from openai import OpenAI
@@ -59,6 +60,16 @@ def split_text_into_chunks(text: str):
 # --- Route: upload any supported file and store embeddings ---
 @router.post("/upload")
 async def upload_file(file: UploadFile):
+     # --- Save the uploaded file so it can be viewed later ---
+    upload_dir = Path("uploads")
+    upload_dir.mkdir(exist_ok=True)
+
+    save_path = upload_dir / file.filename
+    with open(save_path, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+
+    # Reset file pointer so PdfReader can read it again
+    file.file.seek(0)
     # Get database place number
     if collection:
         results = collection.get()
@@ -105,4 +116,8 @@ async def upload_file(file: UploadFile):
         documents=documents
     )
 
-    return {"message": f"Uploaded and processed {file.filename}", "pages": len(documents)}
+    return {
+    "message": f"Uploaded and processed {file.filename}",
+    "pages": len(documents),
+    "file_url": f"/uploads/{file.filename}"
+    }
