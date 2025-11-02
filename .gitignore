@@ -36,3 +36,6 @@ databases/
 build/
 dist/
 *.egg-info/
+
+# --- Uploaded files ---
+uploads/
