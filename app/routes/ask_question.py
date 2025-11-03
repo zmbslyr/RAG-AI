@@ -5,7 +5,6 @@ import re
 import json
 import markdown
 from difflib import get_close_matches
-from openai import OpenAI
 from app.config import client_openai, collection
 
 from fastapi.testclient import TestClient
@@ -48,6 +47,43 @@ router = APIRouter()
 # --- Route: ask question ---
 @router.post("/ask")
 async def ask_question(query: str = Form(...)):
+
+    # Detect delete command
+    if query.strip().lower().startswith("delete "):
+        filename_query = query.split(" ", 1)[1].strip().lower()
+
+        # Get all files
+        files_info = await call_list_files_route()
+        files = files_info.get("files", [])
+        filenames = [f.get("filename") for f in files if f.get("filename")]
+
+        if not filenames:
+            return JSONResponse({"answer": "No files in database to delete"})
+        
+        # Fuzzy match the input to the existing filenames
+        match = get_close_matches(filename_query.lower(), [fn.lower() for fn in filenames], n=1, cutoff=0.4)
+        if not match:
+            return JSONResponse({"answer": f"No close match found for '{filename_query}'.", "used_files": []})
+        
+        matched_filename = match[0]
+        matched_file_id = next((f["file_id"] for f in files if f["filename"].lower() == matched_filename), None)
+
+        if not matched_file_id:
+            return JSONResponse({"answer": f"Could not find file_id for '{matched_filename}'.", "used_files": []})
+        
+        # Call delete_file route internally
+        client_local = TestClient(app)
+        response = client_local.delete(f"/delete_file/{matched_file_id}")
+
+        if response.status_code != 200:
+            return JSONResponse({
+                "answer": f"Error deleting '{matched_filename}': {response.json().get('detail', 'Unknown error')}",
+                "used_files": []
+            })
+        
+        result = response.json()
+        result_text = f"Deleted '{matched_filename}' (file_id: {matched_file_id})\n\nRemaining files: {result.get('remaining_files', 0)}"
+        return JSONResponse({"answer": f"<pre>{result_text}</pre>", "used_files": []})
 
     # Detect debug command
     if query.strip().lower().startswith("debug"):
