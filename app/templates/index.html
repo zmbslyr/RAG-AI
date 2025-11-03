@@ -4,39 +4,61 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>RAG PDF Assistant</title>
-    <link rel="stylesheet" href="/static/style.css" />
+    <!-- add a cache-buster so you don't see old CSS -->
+    <link rel="stylesheet" href="/static/style.css?v=2" />
   </head>
   <body>
-    <div class="container">
-      <header>
-        <h1>RAG PDF Assistant</h1>
-      </header>
-
-      <section class="upload-section">
-        <h2>Upload PDF / Text File</h2>
-        <form id="uploadForm" enctype="multipart/form-data">
-          <input type="file" id="pdfFile" name="file" accept=".pdf,.txt,.rtf,.utf-8" required />
-          <button type="submit">Upload</button>
-        </form>
-
-        <!-- Spinner & Processing Text -->
-        <div id="processingContainer" class="processing-container" style="display:none;">
-          <div class="spinner"></div>
-          <div class="processing-text">Processing<span id="dots"></span></div>
+    <div class="app">
+      <!-- LEFT: PDF Viewer -->
+      <section class="left-pane">
+        <header class="pane-header">
+          <strong>PDF Viewer</strong>
+          <div class="viewer-controls">
+            <select id="fileSelect" title="Choose a PDF"></select>
+            <input id="pageInput" type="number" min="1" value="1" />
+            <button id="goPageBtn" type="button">Go</button>
+          </div>
+        </header>
+        <div class="viewer-wrap">
+          <iframe id="pdfViewer" title="PDF Viewer" frameborder="0"></iframe>
         </div>
-
-        <p id="uploadStatus"></p>
       </section>
 
-      <section class="chat-section">
-        <div id="chatLog" class="chat-log"></div>
-        <form id="askForm" class="chat-input">
-          <textarea id="query" name="query" placeholder="Ask something..." autocomplete="off" required></textarea>
-          <button type="submit">Send</button>
-        </form>
+      <!-- RIGHT: Upload + Chat -->
+      <section class="right-pane">
+        <header class="pane-header">
+          <strong>RAG PDF Assistant</strong>
+        </header>
+
+        <section class="upload-section">
+          <form id="uploadForm" enctype="multipart/form-data">
+            <input type="file" id="pdfFile" name="file" accept=".pdf,.txt,.rtf,.utf-8" required />
+            <button type="submit">Upload</button>
+          </form>
+
+          <div id="processingContainer" class="processing-container" style="display:none;">
+            <div class="spinner"></div>
+            <div class="processing-text">Processing<span id="dots"></span></div>
+          </div>
+
+          <p id="uploadStatus"></p>
+        </section>
+
+        <section class="chat-section">
+          <div id="chatLog" class="chat-log"></div>
+
+          <div class="quick-ask">
+            <button id="askPageBtn" type="button">Ask about this page</button>
+          </div>
+
+          <form id="askForm" class="chat-input">
+            <textarea id="query" name="query" placeholder="Ask something..." autocomplete="off" required></textarea>
+            <button type="submit">Send</button>
+          </form>
+        </section>
       </section>
     </div>
 
-    <script src="/static/script.js"></script>
+    <script src="/static/script.js?v=2"></script>
   </body>
 </html>
