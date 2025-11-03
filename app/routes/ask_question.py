@@ -19,6 +19,13 @@ async def call_list_files_route():
     response = client_local.get("/list_files")
     return response.json()
 
+# --- Internal helper: call /debug_metadata route from inside the app ---
+async def call_debug_route():
+    """Call the /debug route and return its JSON."""
+    response = client_local.get("/debug_metadata")
+    return response.json()
+
+
 # --- Helper: fuzzy-match a partial query to DB filenames ---
 async def find_best_file_match_func(query: str):
     """
@@ -42,11 +49,19 @@ router = APIRouter()
 @router.post("/ask")
 async def ask_question(query: str = Form(...)):
 
-    # 1. Detect a page number (like "page 3")
+    # Detect debug command
+    if query.strip().lower().startswith("debug"):
+        debug_info = await call_debug_route()
+        # Optionally pretty-format JSON for readability in chat
+        debug_json = json.dumps(debug_info, indent=2)
+        debug_html = f"<pre>{debug_json}</pre>"
+        return JSONResponse({"answer": debug_html, "used_files": []})
+
+    # Detect a page number (like "page 3")
     page_match = re.search(r"page\s+(\d+)", query, re.IGNORECASE)
     page_num = int(page_match.group(1)) if page_match else None
 
-    # 2. Detect a filename (quoted or capitalized)
+    # Detect a filename (quoted or capitalized)
     file_match = re.search(r'["“”](.+?)["“”]', query)  # match text in quotes
     if file_match:
         file_query = file_match.group(1).strip()
@@ -55,7 +70,7 @@ async def ask_question(query: str = Form(...)):
         possible_name = re.search(r'([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,4})', query)
         file_query = possible_name.group(1).strip() if possible_name else None
 
-    # 3. If a file name was detected, try to match it to known sources (best-effort)
+    # If a file name was detected, try to match it to known sources (best-effort)
     matched_file = None
     if file_query:
         all_files = {

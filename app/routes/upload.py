@@ -7,6 +7,8 @@ from openai import OpenAI
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from pypdf import PdfReader
 
+from datetime import datetime
+
 from app.config import collection
 
 # Optional RTF import
@@ -81,6 +83,17 @@ async def upload_file(file: UploadFile):
 
     pages = extract_text(file)
     max_pages = len(pages)
+    normalized_id = Path(file.filename).stem.lower().replace(" ", "-")
+    file_id = normalized_id
+
+    existing_files = collection.get(include=["metadatas"])["metadatas"]
+    existing_ids = {m.get("file_id") for m in existing_files if m.get("file_id")}
+    if file_id in existing_ids:  # <-- compare the normalized id, not the UploadFile object
+        print(f"\nDuplicate file detected. File: '{file.filename}' already exists in database\n")
+        return {"message": f"Duplicate upload skipped: '{file.filename}' already exists in database."}
+
+    uploaded_at = datetime.now().isoformat()
+    embedding_model = "text-embedding-3-large"
 
     ids, metadatas, documents, embeddings = [], [], [], []
 
@@ -91,10 +104,13 @@ async def upload_file(file: UploadFile):
 
         meta = {
             "source": file.filename,
-            "file_id": Path(file.filename).stem,
+            "file_id": file_id,
             "place": db_place,
             "page": page_number,
             "pages": max_pages,
+            "char_count": len(chunk_text),
+            "embedding_model": embedding_model,
+            "uploaded_at": uploaded_at
         }
         print(f"\n\n{meta}\n\n")
 
@@ -103,7 +119,7 @@ async def upload_file(file: UploadFile):
             input=chunk_text
         ).data[0].embedding
 
-        unique_prefix = f"{file.filename}-{os.urandom(4).hex()}"
+        unique_prefix = f"{file_id}-{os.urandom(4).hex()}"
         ids.append(f"{unique_prefix}-page-{page_number}")
         metadatas.append(meta)
         documents.append(chunk_text)
