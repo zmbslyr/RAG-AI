@@ -9,8 +9,6 @@ const processingContainer = document.getElementById("processingContainer");
 // Viewer elements
 const fileSelect = document.getElementById("fileSelect");
 const pdfViewer = document.getElementById("pdfViewer");
-const pageInput = document.getElementById("pageInput");
-const goPageBtn = document.getElementById("goPageBtn");
 const askPageBtn = document.getElementById("askPageBtn");
 
 // Query box for auto-resize + enter-to-send
@@ -21,16 +19,16 @@ let filesIndex = []; // [{ filename, file_id, total_pages, place }]
 let currentFile = null;
 
 // ------- Helpers -------
-function setViewer(filename, page = 1) {
+function setViewer(filename) {
   if (!filename) return;
   currentFile = filename;
 
   // Use the browser's native PDF viewer (simple & fast); page param supported by most
-  pdfViewer.src = `/uploads/${encodeURIComponent(filename)}#page=${page}`;
+  pdfViewer.src = `/uploads/${encodeURIComponent(filename)}`;
   pageInput.value = page || 1;
   // Keep the select in sync
   for (const opt of fileSelect.options) {
-    if (opt.value === filename) opt.selected = true;
+    opt.selected = (opt.value === filename);
   }
 }
 
@@ -70,7 +68,7 @@ async function refreshFiles() {
     });
 
     // If nothing selected yet, show the first file
-    if (!currentFile) setViewer(files[0].filename, 1);
+    if (!currentFile) setViewer(files[0].filename);
   } catch (e) {
     console.error("Failed to load files:", e);
   }
@@ -193,21 +191,11 @@ fileSelect.addEventListener("change", () => {
   setViewer(filename, 1);
 });
 
-goPageBtn.addEventListener("click", () => {
-  const page = Math.max(1, parseInt(pageInput.value || "1", 10));
-  setViewer(currentFile, page);
-});
-
-// Quick helper: prefill the query with current page info
-askPageBtn.addEventListener("click", () => {
-  const page = Math.max(1, parseInt(pageInput.value || "1", 10));
-  const base = `page ${page} `;
-  if (!queryBox.value.startsWith(base)) {
-    queryBox.value = base + queryBox.value;
-    queryBox.dispatchEvent(new Event("input"));
-  }
-  queryBox.focus();
-});
-
 // ------- Init -------
-refreshFiles();
+window.addEventListener("DOMContentLoaded", async () => {
+  await refreshFiles();
+  if (fileSelect.options.length > 0) {
+    const firstFile = fileSelect.options[0].value;
+    setViewer(firstFile);
+  }
+});
