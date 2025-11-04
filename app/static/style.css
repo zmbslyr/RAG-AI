@@ -147,3 +147,10 @@ body {
 /* slim scroll for textarea (webkit) */
 .chat-input textarea::-webkit-scrollbar { width: 6px; }
 .chat-input textarea::-webkit-scrollbar-thumb { background: var(--brand); }
+
+/* Chat log visited links for source pages */
+.chat-log h4 { margin-top: 1em; }
+.chat-log p strong { color: var(--brand); }
+.chat-log a,
+.chat-log a:visited { color: #0645AD; text-decoration: underline; }
+.chat-log a:hover { text-decoration: none; }

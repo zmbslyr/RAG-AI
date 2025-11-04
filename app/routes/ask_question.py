@@ -154,6 +154,32 @@ async def ask_question(query: str = Form(...)):
     retrieved_docs = results.get("documents", [[]])[0]
     retrieved_metas = results.get("metadatas", [[]])[0]
 
+    # Build list of sources with page links
+    sources_list = []
+    seen = set()  # to prevent duplicates
+
+    for meta in retrieved_metas:
+        if not meta or not isinstance(meta, dict):
+            continue
+
+        filename = meta.get("source", "unknown")
+        page = meta.get("page", "unknown")
+
+        if filename == "unknown" or page == "unknown":
+            continue
+
+        # Build direct link to the page in the uploaded PDF
+        url = f"/uploads/{filename}#page={page}"
+        key = (filename, page)
+        if key not in seen:
+            seen.add(key)
+            sources_list.append({
+                "filename": filename,
+                "page": page,
+                "url": url
+            })
+
+
     # Return if no documents
     if not retrieved_docs:
         return JSONResponse({"answer": "No relevant documents found."})
@@ -380,7 +406,35 @@ async def ask_question(query: str = Form(...)):
         extensions=["fenced_code", "tables", "codehilite"]
     )
 
+    # --- Build grouped clickable source links for in-app viewer ---
+    from collections import defaultdict
+
+    grouped_sources = defaultdict(list)
+    for s in sources_list:
+        grouped_sources[s["filename"]].append(int(s["page"]))
+
+    # Sort and deduplicate
+    for fname in grouped_sources:
+        grouped_sources[fname] = sorted(set(grouped_sources[fname]))
+
+    sources_html = ""
+    if grouped_sources:
+        html_lines = ["<h4>Sources:</h4>"]
+        for fname, pages in grouped_sources.items():
+            # Each page number becomes a link with data attributes
+            page_links = ", ".join(
+                f'<a href="#" class="open-in-viewer" data-file="{fname}" data-page="{p}">{p}</a>'
+                for p in pages
+            )
+
+            plural = "Pages" if len(pages) > 1 else "Page"
+            html_lines.append(f"<p><strong>{fname}</strong> — {plural} {page_links}</p>")
+        sources_html = "\n".join(html_lines)
+
+    final_html = answer_html + sources_html
+
     return JSONResponse({
-        "answer": answer_html,
-        "used_files": included_files
+        "answer": final_html,
+        "used_files": included_files,
+        "sources": sources_list
     })

@@ -19,18 +19,20 @@ let filesIndex = []; // [{ filename, file_id, total_pages, place }]
 let currentFile = null;
 
 // ------- Helpers -------
-function setViewer(filename) {
+function setViewer(filename, page = 1) {
   if (!filename) return;
   currentFile = filename;
 
-  // Use the browser's native PDF viewer (simple & fast); page param supported by most
-  pdfViewer.src = `/uploads/${encodeURIComponent(filename)}`;
-  pageInput.value = page || 1;
+  // Use the browser's native PDF viewer; support page fragment
+  const encoded = encodeURIComponent(filename);
+  pdfViewer.src = `/uploads/${encoded}#page=${page}`;
+
   // Keep the select in sync
   for (const opt of fileSelect.options) {
     opt.selected = (opt.value === filename);
   }
 }
+
 
 async function refreshFiles() {
   try {
@@ -199,3 +201,61 @@ window.addEventListener("DOMContentLoaded", async () => {
     setViewer(firstFile);
   }
 });
+
+// Make openInViewer globally accessible (for reuse elsewhere if needed)
+window.openInViewer = function(filename, page) {
+  const pdfViewer = document.getElementById("pdfViewer");
+  const fileSelect = document.getElementById("fileSelect");
+
+  // Ensure the dropdown shows this file
+  let hasOption = false;
+  for (const opt of fileSelect.options) {
+    if (opt.value === filename) { hasOption = true; break; }
+  }
+  if (!hasOption) {
+    const opt = document.createElement("option");
+    opt.value = filename;
+    opt.textContent = filename;
+    fileSelect.appendChild(opt);
+  }
+  fileSelect.value = filename;
+
+  // Build new source with a unique cache-buster each time
+  const encoded = encodeURIComponent(filename);
+  const newSrc = `/uploads/${encoded}#page=${page}`;
+
+  // Always force a reload — browsers sometimes cache PDF state
+  pdfViewer.src = "about:blank";
+  setTimeout(() => {
+    pdfViewer.src = newSrc + `&t=${Date.now()}`;
+  }, 50);
+
+  console.log("openInViewer called:", newSrc);
+};
+
+// === Intercept clicks on in-app source links (robust version) ===
+function bindOpenInViewerDelegation() {
+  const chatLog = document.getElementById("chatLog");
+  if (!chatLog) return;
+
+  chatLog.addEventListener("click", (e) => {
+    const a = e.target.closest("a.open-in-viewer");
+    if (!a || !chatLog.contains(a)) return;
+
+    e.preventDefault();      // stop browser navigation
+    e.stopPropagation();     // prevent bubble capture
+
+    const filename = a.dataset.file;
+    const page = parseInt(a.dataset.page, 10) || 1;
+
+    console.log("Intercepted click:", filename, page);
+    window.openInViewer(filename, page);
+  });
+}
+
+
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", bindOpenInViewerDelegation);
+} else {
+  bindOpenInViewerDelegation();
+}
