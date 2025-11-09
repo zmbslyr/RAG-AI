@@ -39,3 +39,6 @@ dist/
 
 # --- Uploaded files ---
 uploads/
+
+# --- User Login info
+app/users/

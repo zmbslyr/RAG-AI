@@ -1,3 +1,106 @@
+// === AUTH + LOGIN SETUP (safe version) ===
+window.addEventListener("DOMContentLoaded", () => {
+  const loginModal   = document.getElementById("loginModal");
+  const loginForm    = document.getElementById("loginForm");
+  const registerForm = document.getElementById("registerForm");
+  const registerLink = document.getElementById("registerLink");
+  const backToLogin  = document.getElementById("backToLogin");
+
+  function showLogin() {
+    if (loginModal) loginModal.style.display = "flex";
+  }
+  function hideLogin() {
+    if (loginModal) loginModal.style.display = "none";
+  }
+
+  // Always clear any previous session token when the app loads
+  localStorage.removeItem("authToken");
+  let authToken = null;
+
+  // Always show login modal on startup
+  showLogin();
+
+
+  async function authFetch(url, options = {}) {
+    const opts = { ...options, headers: { ...(options.headers || {}) } };
+    if (authToken) opts.headers["Authorization"] = `Bearer ${authToken}`;
+    const res = await fetch(url, opts);
+    if (res.status === 401) {
+      localStorage.removeItem("authToken");
+      authToken = null;
+      showLogin();
+      throw new Error("Unauthorized");
+    }
+    return res;
+  }
+  window.authFetch = authFetch; // make global for other handlers
+
+  if (loginForm) {
+    loginForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const username = document.getElementById("loginUsername").value;
+      const password = document.getElementById("loginPassword").value;
+
+      const body = new URLSearchParams();
+      body.append("username", username);
+      body.append("password", password);
+
+      const res = await fetch("/auth/token", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body,
+      });
+      const data = await res.json();
+      if (res.ok && data.access_token) {
+        authToken = data.access_token;
+        localStorage.setItem("authToken", authToken);
+        hideLogin();
+      } else {
+        alert(data.detail || "Login failed");
+      }
+    });
+  }
+
+  if (registerForm) {
+    registerForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const username = document.getElementById("registerUsername").value;
+      const password = document.getElementById("registerPassword").value;
+
+      const res = await fetch("/auth/register", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username, password }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        alert("Registered successfully! Please log in.");
+        registerForm.style.display = "none";
+        if (loginForm) loginForm.style.display = "block";
+      } else {
+        alert(data.detail || "Registration failed");
+      }
+    });
+  }
+
+  if (registerLink) {
+    registerLink.addEventListener("click", (e) => {
+      e.preventDefault();
+      loginForm.style.display = "none";
+      registerForm.style.display = "block";
+    });
+  }
+
+  if (backToLogin) {
+    backToLogin.addEventListener("click", (e) => {
+      e.preventDefault();
+      registerForm.style.display = "none";
+      loginForm.style.display = "block";
+    });
+  }
+});
+
+
 // ------- Elements -------
 const uploadForm = document.getElementById("uploadForm");
 const pdfFile = document.getElementById("pdfFile");
@@ -36,7 +139,7 @@ function setViewer(filename, page = 1) {
 
 async function refreshFiles() {
   try {
-    const res = await fetch("/list_files");
+    const res = await authFetch("/list_files");
     const data = await res.json();
 
     const files = (data.files || [])
@@ -133,7 +236,7 @@ uploadForm.onsubmit = async (e) => {
   uploadForm.querySelector("button").disabled = true;
 
   try {
-    const res = await fetch("/upload", { method: "POST", body: formData });
+    const res = await authFetch("/upload", { method: "POST", body: formData });
     const data = await res.json();
     uploadStatus.textContent = data.message || "Uploaded.";
     // Refresh list and display the just-uploaded file (if it's a PDF)
@@ -168,7 +271,7 @@ askFormEl.onsubmit = async (e) => {
   formData.append("query", query);
 
   try {
-    const res = await fetch("/ask", { method: "POST", body: formData });
+    const res = await authFetch("/ask", { method: "POST", body: formData });
     const data = await res.json();
     removeLastAssistantMessage();
     appendMessage("assistant", data.answer);
