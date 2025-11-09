@@ -383,6 +383,7 @@ async def ask_question(query: str = Form(...)):
         "When asked about content on a specific page, or the number of pages, you must use these Page numbers. "
         "When you reference or compare material, explicitly mention the Filename and Page numbers so sources are clear."
         "During comparisons across multiple documents, always attribute each point with 'Filename, Page N' based on the headers in the provided context."
+        "You are allowed to use your knowlege as a librarian and scholar when providing answers on themes, or in comparisons"
     )
 
     # --- Define tools (functions) the LLM can call ---
@@ -543,8 +544,17 @@ async def ask_question(query: str = Form(...)):
             html_lines.append(f"<p><strong>{fname}</strong> — {plural} {page_links}</p>")
         sources_html = "\n".join(html_lines)
 
-    final_html = answer_html + sources_html
-    
+    # --- Remove sources for file listing queries ---
+    # Detect if the user asked to list or show files
+    is_file_listing_query = re.search(r"\b(list|show|what files|available files|which files)\b", query, re.IGNORECASE)
+
+    if is_file_listing_query:
+        # Skip source rendering entirely for these queries
+        final_html = answer_html
+        sources_list = []
+    else:
+        final_html = answer_html + sources_html
+
     # Update session memory
     update_session_memory(session_id, query, answer_markdown)
 

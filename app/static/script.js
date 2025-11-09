@@ -87,14 +87,18 @@ function appendMessage(role, text) {
 function appendThinkingMessage() {
   const msg = document.createElement("div");
   msg.className = "message assistant";
-  msg.innerHTML = `<div class="bubble">Thinking<span class="thinking-dots"></span></div>`;
+  msg.innerHTML = `
+    <div class="bubble">
+      Thinking
+      <span class="thinking-dots"><span></span></span>
+    </div>`;
   chatLog.appendChild(msg);
   chatLog.scrollTop = chatLog.scrollHeight;
 
   let dotCount = 0;
   const interval = setInterval(() => {
     dotCount = (dotCount + 1) % 4;
-    const dots = msg.querySelector(".thinking-dots");
+    const dots = msg.querySelector(".thinking-dots span");
     if (dots) dots.textContent = ".".repeat(dotCount);
   }, 400);
 

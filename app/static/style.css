@@ -130,6 +130,31 @@ body {
 .message.user .bubble { background: var(--brand); color:#fff; }
 .message.assistant .bubble { background:#e5e7eb; color:#111; }
 
+.thinking-dots {
+  display: inline-block;
+  position: relative;
+  width: 1.5em;          /* fixed width for up to 3 dots */
+  height: 1em;           /* fixed height so it won't push text vertically */
+  font-family: monospace;
+  line-height: 1;
+  vertical-align: baseline;
+  white-space: pre;
+}
+
+.thinking-dots::before {
+  content: "...";        /* invisible spacer ensures constant width */
+  visibility: hidden;
+}
+
+.thinking-dots span {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  text-align: left;
+}
+
 .quick-ask { display:flex; justify-content:flex-end; }
 .quick-ask button {
   background:#fff; border:1px solid var(--border); border-radius:8px; padding:6px 10px; cursor:pointer;
