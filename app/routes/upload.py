@@ -21,7 +21,7 @@ router = APIRouter()
 client_openai = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 
-# --- Helpers (copied from main.py or moved to shared utils) ---
+# --- Helpers ---
 def extract_text(file: UploadFile):
     filename = file.filename.lower()
 
@@ -58,6 +58,32 @@ def split_text_into_chunks(text: str):
     splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
     return splitter.split_text(text)
 
+def get_next_available_place():
+    """Find the lowest available 'place' number among existing files."""
+    results = collection.get(include=["metadatas"])
+    all_metadata = results.get("metadatas", []) if results else []
+
+    existing_places = set()
+    for m in all_metadata:
+        place = m.get("place")
+        if isinstance(place, int):
+            existing_places.add(place)
+        else:
+            try:
+                existing_places.add(int(place))
+            except Exception:
+                continue
+
+    if not existing_places:
+        return 1
+
+    # Find smallest missing positive integer
+    n = 1
+    while n in existing_places:
+        n += 1
+    return n
+
+
 
 # --- Route: upload any supported file and store embeddings ---
 @router.post("/upload")
@@ -74,12 +100,9 @@ async def upload_file(file: UploadFile):
     file.file.seek(0)
     # Get database place number
     if collection:
-        results = collection.get()
-        all_metadata = results.get("metadatas", [])
-        unique_files = {m.get("file_id", "unknown"): m.get("source", "unknown") for m in all_metadata}
-        db_place = len(unique_files) + 1
+        db_place = get_next_available_place()
     else:
-        db_place = 0
+        db_place = 1
 
     pages = extract_text(file)
     max_pages = len(pages)

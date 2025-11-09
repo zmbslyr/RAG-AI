@@ -6,9 +6,17 @@ import json
 import markdown
 from difflib import get_close_matches
 from app.config import client_openai, collection
+from app.memory import session_memory, get_session_context, update_session_memory, get_last_active_file, set_last_active_file
+import uuid
+from pathlib import Path
+
 
 from fastapi.testclient import TestClient
 from app.main import app
+
+# --- Helper to normalize filename to file_id ---
+def to_file_id(filename: str) -> str:
+    return Path(filename).stem.lower() if filename else ""
 
 # --- Internal helper: call /list_files route from inside the app ---
 client_local = TestClient(app)
@@ -47,6 +55,24 @@ router = APIRouter()
 # --- Route: ask question ---
 @router.post("/ask")
 async def ask_question(query: str = Form(...)):
+
+    # --- Conversation memory setup ---
+    # Generate or retrieve a session ID (in production, send from frontend)
+    session_id = "default"  # Replace later with client-provided ID if desired
+    prior_context = get_session_context(session_id)
+
+    # Track which file should be "active" this round
+    active_file = get_last_active_file(session_id)
+    matched_file = None
+
+    # Optional: only keep memory turns about the same file
+    if active_file or matched_file:
+        file_ref = (matched_file or active_file)
+        # crude text filter to remove prior turns mentioning other filenames
+        prior_context = "\n".join([
+            line for line in prior_context.splitlines()
+            if not re.search(r"\.pdf", line, re.IGNORECASE) or file_ref.lower() in line.lower()
+        ])
 
     # Detect delete command
     if query.strip().lower().startswith("delete "):
@@ -97,42 +123,111 @@ async def ask_question(query: str = Form(...)):
     page_match = re.search(r"page\s+(\d+)", query, re.IGNORECASE)
     page_num = int(page_match.group(1)) if page_match else None
 
-    # Detect a filename (quoted or capitalized)
-    file_match = re.search(r'["“”](.+?)["“”]', query)  # match text in quotes
-    if file_match:
-        file_query = file_match.group(1).strip()
+    # --- Ask the LLM to infer which file(s) to target (supports compare mode) ---
+    files_info = await call_list_files_route()
+    available_files = [f["filename"] for f in files_info.get("files", [])]
+    available_file_ids = [f["file_id"] for f in files_info.get("files", [])]
+    active_file = get_last_active_file(session_id)
+
+    file_inference_prompt = f"""
+    You determine which document(s) the user means.
+
+    Conversation so far:
+    {prior_context}
+
+    User just asked: "{query}"
+
+    Available files (exact filenames): {available_files}
+    Currently active file: {active_file or 'None'}
+
+    Rules:
+    - If user clearly names one doc or implies the last active doc, return that ONE exact filename.
+    - If user is comparing/asking about multiple docs (e.g., "compare", "vs", "both", or names multiple),
+    return the exact filenames separated by commas, in any order.
+    - If user says "all files" or similar, return the exact filenames for ALL available files, comma-separated.
+    - If uncertain, return "None".
+
+    Respond with ONLY the filename(s) from the list, comma-separated. No extra text.
+    """
+
+    inference = client_openai.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[{"role": "user", "content": file_inference_prompt}],
+    )
+    llm_raw = (inference.choices[0].message.content or "").strip()
+    print(f"[LLM FILE INFERENCE RAW] {llm_raw}")
+
+    # Parse the LLM output
+    tokens = [t.strip() for t in llm_raw.split(",") if t.strip()]
+    # Validate strictly against the available list
+    valid = [t for t in tokens if t in available_files]
+
+    # Heuristics if model returns None/empty
+    if not valid:
+        # If query looks like a compare request but LLM didn't list, fall back to all
+        if re.search(r"\b(compare|vs|versus|both|all files|all documents)\b", query, re.IGNORECASE):
+            valid = available_files[:]
+        # Otherwise reuse active_file if available
+        elif active_file:
+            valid = [active_file]
+
+    # Set modes and memory
+    matched_files = valid[:]                           # list of filenames
+    multi_file_mode = len(matched_files) > 1           # comparison mode?
+    matched_file = matched_files[0] if matched_files else None  # primary for continuity
+
+    if matched_file:
+        set_last_active_file(session_id, matched_file)
+
+    print(f"[MATCH] Query: {query}")
+    print(f"[MATCH] Inferred files: {matched_files or 'None'}")
+    print(f"[MATCH] Multi-file mode: {multi_file_mode}")
+    print(f"[MATCH] Active file (memory): {active_file}")
+
+
+
+    # --- Build metadata filter (single-file or multi-file) ---
+    filters = {}
+
+    def one_file_filter(fname: str):
+        fid = to_file_id(fname)
+        # Prefer matching by file_id; also allow exact source filename for safety
+        return {"$or": [{"file_id": fid}, {"source": fname}]}
+
+    if matched_files and multi_file_mode:
+        # Only include the selected files (good for compare between specific docs)
+        ors = [one_file_filter(f) for f in matched_files]
+        filters = {"$or": ors} if ors else {}
+    elif matched_file:
+        filters = one_file_filter(matched_file)
     else:
-        # fallback heuristic for unquoted titles: consecutive capitalized words
-        possible_name = re.search(r'([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,4})', query)
-        file_query = possible_name.group(1).strip() if possible_name else None
+        filters = {}  # nothing inferred → allow wide search
 
-    # If a file name was detected, try to match it to known sources (best-effort)
-    matched_file = None
-    if file_query:
-        all_files = {
-            m.get("source") for m in collection.get(include=["metadatas"])["metadatas"]
-            if m.get("source")
-        }
-        print("\n[DEBUG] Available file sources in collection:")
-        for f in all_files:
-            print(f"  -> {f}")
+    # Add optional page filter (applies to both single and multi-file cases)
+    if page_num is not None:
+        page_filter = {"$or": [{"page": page_num}, {"page": str(page_num)}]}
+        filters = {"$and": [filters, page_filter]} if filters else page_filter
 
-        matches = get_close_matches(file_query, all_files, n=1, cutoff=0.5)
-        if matches:
-            matched_file = matches[0]
+    # Natural-language fallbacks that should open the filter up
+    if re.search(r"\b(all files|compare|vs|versus|both)\b", query, re.IGNORECASE):
+        # If user explicitly asks to compare EVERYTHING, drop to empty filters.
+        if re.search(r"\ball files\b", query, re.IGNORECASE):
+            filters = {}
+        # If they didn’t name which files, we already constrained to matched_files above.
+        # If matched_files is empty, filters stays {} (wide compare).
 
-    # 4. Create appropriate query embedding
+    print("\n===============================")
+    print(f"[FILTER] Final filter object: {json.dumps(filters, indent=2)}")
+    print("=================================\n")
+
+    # Create appropriate query embedding
     query_embedding = client_openai.embeddings.create(
         model="text-embedding-3-large",
         input="page lookup" if page_num else query
     ).data[0].embedding
 
-    # 5. Build metadata filter dynamically
-    filters = {}
-    if matched_file:
-        filters["source"] = matched_file
-    if page_num:
-        filters["$or"] = [{"page": page_num}, {"page": str(page_num)}]
+    if re.search(r"\b(compare|both|all files)\b", query, re.IGNORECASE):
+        filters = {}  # disable filtering for cross-file questions
 
     # 6. Query Chroma with these filters
     results = collection.query(
@@ -277,6 +372,8 @@ async def ask_question(query: str = Form(...)):
 
     # 6) Strong system prompt instructing the model to pay attention to file headers
     system_message = (
+        "You must limit your reasoning to the provided excerpts for the active file "
+        "(unless the question clearly asks to compare multiple documents). "
         "You are an assistant that answers questions using only the provided document excerpts. "
         "Each page starts with '--- FILE: <filename> | PAGE: <number> of <number> | PLACE: <number> ---'. "
         "The number in PLACE represents the files location in the database. "
@@ -285,6 +382,7 @@ async def ask_question(query: str = Form(...)):
         "When comparing multiple documents, explicitly mention Filename and Page numbers. "
         "When asked about content on a specific page, or the number of pages, you must use these Page numbers. "
         "When you reference or compare material, explicitly mention the Filename and Page numbers so sources are clear."
+        "During comparisons across multiple documents, always attribute each point with 'Filename, Page N' based on the headers in the provided context."
     )
 
     # --- Define tools (functions) the LLM can call ---
@@ -317,12 +415,26 @@ async def ask_question(query: str = Form(...)):
         context = "(context skipped — file listing not content-based)"
         system_message = "( no system message needed )"
 
-    # 7) Ask the LLM with the grouped context
+    # Integrate short-term memory into the prompt
+    user_prompt = f"""
+    --- Prior Conversation ---
+    {prior_context}
+
+    --- Retrieved Context ---
+    {context}
+
+    --- New Question ---
+    {query}
+    """
+
+    print(f"\n{user_prompt}\n")
+
+    # Ask the LLM with the grouped context
     completion = client_openai.chat.completions.create(
         model="gpt-4o",
         messages=[
             {"role": "system", "content": system_message},
-            {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {query}"}
+            {"role": "user", "content": user_prompt}
         ],
         tools=tools,
         tool_choice="auto"
@@ -432,6 +544,9 @@ async def ask_question(query: str = Form(...)):
         sources_html = "\n".join(html_lines)
 
     final_html = answer_html + sources_html
+    
+    # Update session memory
+    update_session_memory(session_id, query, answer_markdown)
 
     return JSONResponse({
         "answer": final_html,
