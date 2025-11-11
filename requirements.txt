@@ -12,3 +12,4 @@ striprtf
 markdown
 passlib
 python-jose[cryptography]
+pydantic_settings

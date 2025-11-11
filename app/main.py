@@ -1,17 +1,14 @@
 # app/main.py
-
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-
 from pathlib import Path
-
 import importlib
 import pkgutil
 
+# Local imports
 from app import routes
-from app.config import collection
 
 # Initialize app
 app = FastAPI()

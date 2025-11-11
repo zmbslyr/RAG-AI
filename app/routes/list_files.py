@@ -1,7 +1,9 @@
 # app/routes/list_files.py
 from fastapi import APIRouter
-from app.config import collection
 from collections import defaultdict
+
+# Local imports
+from app.core.db import collection
 
 router = APIRouter()
 

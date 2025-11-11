@@ -2,14 +2,14 @@ from fastapi import APIRouter, UploadFile
 from pathlib import Path
 import shutil
 import os
-
 from openai import OpenAI
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from pypdf import PdfReader
-
 from datetime import datetime
 
-from app.config import collection
+# Local imports
+from app.services.files_service import extract_text, split_text_into_chunks
+from app.core.db import collection
 
 # Optional RTF import
 try:

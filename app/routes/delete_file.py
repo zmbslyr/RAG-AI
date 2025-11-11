@@ -2,7 +2,10 @@
 from fastapi import APIRouter, HTTPException
 from pathlib import Path
 import os
-from app.config import collection
+
+# Local imports
+from app.services.chroma_service import add_to_collection, query_collection, delete_from_collection
+from app.services.openai_service import create_embedding
 from app.routes.list_files import list_files
 
 router = APIRouter()
@@ -26,7 +29,7 @@ async def delete_file(file_id: str):
 
     # Delete from Chroma
     try:
-        collection.delete(where={"file_id": normalized_id})
+        delete_from_collection(where={"file_id": normalized_id})
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error deleting from Chroma: {str(e)}")
 

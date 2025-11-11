@@ -5,13 +5,13 @@ import re
 import json
 import markdown
 from difflib import get_close_matches
-from app.config import client_openai, collection
-from app.memory import session_memory, get_session_context, update_session_memory, get_last_active_file, set_last_active_file
-import uuid
 from pathlib import Path
-
-
 from fastapi.testclient import TestClient
+
+# Local Imports
+from app.services.openai_service import create_embedding, chat_completion
+from app.services.chroma_service import query_collection
+from app.memory import session_memory, get_session_context, update_session_memory, get_last_active_file, set_last_active_file
 from app.main import app
 
 # --- Helper to normalize filename to file_id ---
@@ -150,7 +150,7 @@ async def ask_question(query: str = Form(...)):
     Respond with ONLY the filename(s) from the list, comma-separated. No extra text.
     """
 
-    inference = client_openai.chat.completions.create(
+    inference = chat_completion(
         model="gpt-4o-mini",
         messages=[{"role": "user", "content": file_inference_prompt}],
     )
@@ -221,16 +221,14 @@ async def ask_question(query: str = Form(...)):
     print("=================================\n")
 
     # Create appropriate query embedding
-    query_embedding = client_openai.embeddings.create(
-        model="text-embedding-3-large",
-        input="page lookup" if page_num else query
-    ).data[0].embedding
+    query_embedding = create_embedding("page lookup" if page_num else query)
+
 
     if re.search(r"\b(compare|both|all files)\b", query, re.IGNORECASE):
         filters = {}  # disable filtering for cross-file questions
 
-    # 6. Query Chroma with these filters
-    results = collection.query(
+    # Query Chroma with these filters
+    results = query_collection(
         query_embeddings=[query_embedding],
         where=filters if filters else None,
         n_results=10,
@@ -370,7 +368,7 @@ async def ask_question(query: str = Form(...)):
 
     context = "\n\n\n".join(context_parts)
 
-    # 6) Strong system prompt instructing the model to pay attention to file headers
+    # Strong system prompt instructing the model to pay attention to file headers
     system_message = (
         "You must limit your reasoning to the provided excerpts for the active file "
         "(unless the question clearly asks to compare multiple documents). "
@@ -431,7 +429,7 @@ async def ask_question(query: str = Form(...)):
     print(f"\n{user_prompt}\n")
 
     # Ask the LLM with the grouped context
-    completion = client_openai.chat.completions.create(
+    completion = chat_completion(
         model="gpt-4o",
         messages=[
             {"role": "system", "content": system_message},
@@ -442,7 +440,7 @@ async def ask_question(query: str = Form(...)):
     )
     print(f"Initial Context\n{context}\nAdditional Prompting:\n{system_message}\n")
 
-    # 8) For traceability, also return which file IDs were included in the context
+    # For traceability, also return which file IDs were included in the context
     included_files = [{"file_id": info.get("file_id"), "filename": info.get("source")} for info in grouped.values()]
 
     message = completion.choices[0].message
@@ -499,7 +497,7 @@ async def ask_question(query: str = Form(...)):
                 })
 
         # Now feed all tool responses back to the model at once
-        second_response = client_openai.chat.completions.create(
+        second_response = chat_completion(
             model="gpt-4o",
             messages=[
                 {"role": "system", "content": system_message},

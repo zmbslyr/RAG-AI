@@ -1,8 +1,10 @@
 from fastapi import APIRouter
-from app.config import collection
-from app.routes.list_files import list_files
 from datetime import datetime
 from collections import defaultdict
+
+# Local imports
+from app.core.db import collection
+from app.routes.list_files import list_files
 
 router = APIRouter()
 

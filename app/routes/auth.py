@@ -9,6 +9,14 @@ from pathlib import Path
 from pydantic import BaseModel
 import json
 
+# Local imports
+from app.core.security import (
+    get_password_hash,
+    verify_password,
+    create_access_token
+)
+from app.core.settings import settings
+
 # === Setup paths ===
 USERS_DIR = Path("app/users")
 USERS_FILE = USERS_DIR / "users.json"
@@ -41,22 +49,6 @@ pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/token")
 
 # === Helpers ===
-def verify_password(plain_password, hashed_password):
-    return pwd_context.verify(plain_password, hashed_password)
-
-def get_password_hash(password):
-    if not isinstance(password, str):
-        raise ValueError("Password must be a string.")
-    # bcrypt limit
-    password = password[:72]
-    return pwd_context.hash(password)
-
-def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
-    to_encode = data.copy()
-    expire = datetime.utcnow() + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
-    to_encode.update({"exp": expire})
-    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-
 def get_user(username: str):
     return users_db.get(username)
 
