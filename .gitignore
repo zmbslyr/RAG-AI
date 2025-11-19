@@ -25,6 +25,7 @@ chroma.sqlite3
 
 # --- ChromaDB databases backed up ---
 databases/
+databases - Copy/
 
 # --- Logs / Cache ---
 *.log

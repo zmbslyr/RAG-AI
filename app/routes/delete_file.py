@@ -29,7 +29,8 @@ async def delete_file(file_id: str):
 
     # Delete from Chroma
     try:
-        delete_from_collection(where={"file_id": normalized_id})
+        # Pass the ID string directly
+        delete_from_collection(normalized_id)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error deleting from Chroma: {str(e)}")
 

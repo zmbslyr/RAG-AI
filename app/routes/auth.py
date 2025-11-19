@@ -1,4 +1,5 @@
 # app/routes/auth.py
+import os
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from passlib.context import CryptContext
@@ -39,7 +40,7 @@ def save_users(data):
 users_db = load_users()
 
 # === Config ===
-SECRET_KEY = "supersecretkey"  # change for production
+SECRET_KEY = os.getenv("SECRET_KEY")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
 
@@ -80,7 +81,8 @@ async def register(payload: RegisterRequest):
     users_db[username] = {
         "username": username,
         "hashed_password": get_password_hash(password),
-        "created_at": datetime.utcnow().isoformat()
+        "created_at": datetime.utcnow().isoformat(),
+        "role": "user"
     }
     save_users(users_db)
 
@@ -96,7 +98,8 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends()):
         raise HTTPException(status_code=401, detail="Invalid username or password.")
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
-        data={"sub": user["username"]}, expires_delta=access_token_expires
+        data={"sub": user["username"], "role": user.get("role", "user")},
+        expires_delta=access_token_expires
     )
     return {"access_token": access_token, "token_type": "bearer"}
 
@@ -108,6 +111,13 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
         username: str = payload.get("sub")
         if username is None or username not in users_db:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials.")
-        return users_db[username]
+        user = users_db[username]
+        user["role"] = payload.get("role", "user")
+        return user
     except JWTError:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials.")
+
+async def require_admin(user=Depends(get_current_user)):
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admins only.")
+    return user

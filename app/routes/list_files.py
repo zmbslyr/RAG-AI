@@ -3,7 +3,7 @@ from fastapi import APIRouter
 from collections import defaultdict
 
 # Local imports
-from app.core.db import collection
+from app.core import db
 
 router = APIRouter()
 
@@ -11,7 +11,7 @@ router = APIRouter()
 async def list_files():
     """List all unique files stored in the Chroma vector database, with full metadata."""
 
-    results = collection.get(include=["metadatas"])
+    results = db.collection.get(include=["metadatas"])
     if not results or not results.get("metadatas"):
         return {"message": "No files found in the vector database.", "count": 0}
 

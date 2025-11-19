@@ -3,7 +3,7 @@ from datetime import datetime
 from collections import defaultdict
 
 # Local imports
-from app.core.db import collection
+from app.core import db
 from app.routes.list_files import list_files
 
 router = APIRouter()
@@ -13,7 +13,7 @@ async def debug_metadata():
     """
     Inspect metadata stored inside Chroma, with per-file summary stats.
     """
-    results = collection.get(include=["metadatas"], limit=None)
+    results = db.collection.get(include=["metadatas"], limit=None)
     metas = results.get("metadatas", [])
 
     list_info = await list_files()

@@ -9,6 +9,10 @@ import pkgutil
 
 # Local imports
 from app import routes
+from fastapi import Depends
+from app.core import db as db_core
+from app.routes.auth import require_admin
+from app.memory import clear_all_active_files
 
 # Initialize app
 app = FastAPI()
@@ -18,6 +22,27 @@ for _, module_name, _ in pkgutil.iter_modules(routes.__path__):
     module = importlib.import_module(f"app.routes.{module_name}")
     if hasattr(module, "router"):
         app.include_router(module.router)
+
+# === Database Management Routes ===
+@app.get("/databases")
+def list_databases():
+    """Return available Chroma database folders."""
+    return {
+        "databases": [p.name for p in db_core.DB_ROOT.iterdir() if p.is_dir()]
+    }
+
+@app.get("/active_database")
+def get_active_database():
+    """Return currently active database (live from db.py)."""
+    return {"active": db_core.ACTIVE_DB_NAME}
+
+@app.post("/set_database")
+def set_database(name: str, user=Depends(require_admin)):
+    """Switch active database (admin only)."""
+    db_core.load_database(name)
+    # Clear active files when database resets
+    clear_all_active_files()
+    return {"message": f"Active database switched to {name}"}
 
 # --- Paths (make sure they point to app/static and app/templates) ---
 #__file__ refers to the current file 

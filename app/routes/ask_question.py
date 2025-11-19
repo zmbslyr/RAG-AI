@@ -6,32 +6,19 @@ import json
 import markdown
 from difflib import get_close_matches
 from pathlib import Path
-from fastapi.testclient import TestClient
 
 # Local Imports
 from app.services.openai_service import create_embedding, chat_completion
 from app.services.chroma_service import query_collection
 from app.memory import session_memory, get_session_context, update_session_memory, get_last_active_file, set_last_active_file
-from app.main import app
+from app.services.files_service import render_page_to_base64
+from app.routes.list_files import list_files
+from app.routes.debug_metadata import debug_metadata
+from app.routes.delete_file import delete_file as delete_file_func
 
 # --- Helper to normalize filename to file_id ---
 def to_file_id(filename: str) -> str:
     return Path(filename).stem.lower() if filename else ""
-
-# --- Internal helper: call /list_files route from inside the app ---
-client_local = TestClient(app)
-
-async def call_list_files_route():
-    """Call the existing /list_files route and return its JSON."""
-    response = client_local.get("/list_files")
-    return response.json()
-
-# --- Internal helper: call /debug_metadata route from inside the app ---
-async def call_debug_route():
-    """Call the /debug route and return its JSON."""
-    response = client_local.get("/debug_metadata")
-    return response.json()
-
 
 # --- Helper: fuzzy-match a partial query to DB filenames ---
 async def find_best_file_match_func(query: str):
@@ -39,7 +26,7 @@ async def find_best_file_match_func(query: str):
     Given a partial or paraphrased title, returns the best matching filenames
     from the available filenames in the database (via list_files).
     """
-    files_info = await call_list_files_route()
+    files_info = await list_files()
     filenames = [f.get("filename") for f in files_info.get("files", []) if f.get("filename")]
     if not filenames:
         return []
@@ -74,46 +61,9 @@ async def ask_question(query: str = Form(...)):
             if not re.search(r"\.pdf", line, re.IGNORECASE) or file_ref.lower() in line.lower()
         ])
 
-    # Detect delete command
-    if query.strip().lower().startswith("delete "):
-        filename_query = query.split(" ", 1)[1].strip().lower()
-
-        # Get all files
-        files_info = await call_list_files_route()
-        files = files_info.get("files", [])
-        filenames = [f.get("filename") for f in files if f.get("filename")]
-
-        if not filenames:
-            return JSONResponse({"answer": "No files in database to delete"})
-        
-        # Fuzzy match the input to the existing filenames
-        match = get_close_matches(filename_query.lower(), [fn.lower() for fn in filenames], n=1, cutoff=0.4)
-        if not match:
-            return JSONResponse({"answer": f"No close match found for '{filename_query}'.", "used_files": []})
-        
-        matched_filename = match[0]
-        matched_file_id = next((f["file_id"] for f in files if f["filename"].lower() == matched_filename), None)
-
-        if not matched_file_id:
-            return JSONResponse({"answer": f"Could not find file_id for '{matched_filename}'.", "used_files": []})
-        
-        # Call delete_file route internally
-        client_local = TestClient(app)
-        response = client_local.delete(f"/delete_file/{matched_file_id}")
-
-        if response.status_code != 200:
-            return JSONResponse({
-                "answer": f"Error deleting '{matched_filename}': {response.json().get('detail', 'Unknown error')}",
-                "used_files": []
-            })
-        
-        result = response.json()
-        result_text = f"Deleted '{matched_filename}' (file_id: {matched_file_id})\n\nRemaining files: {result.get('remaining_files', 0)}"
-        return JSONResponse({"answer": f"<pre>{result_text}</pre>", "used_files": []})
-
     # Detect debug command
     if query.strip().lower().startswith("debug"):
-        debug_info = await call_debug_route()
+        debug_info = await debug_metadata()
         # Optionally pretty-format JSON for readability in chat
         debug_json = json.dumps(debug_info, indent=2)
         debug_html = f"<pre>{debug_json}</pre>"
@@ -124,31 +74,32 @@ async def ask_question(query: str = Form(...)):
     page_num = int(page_match.group(1)) if page_match else None
 
     # --- Ask the LLM to infer which file(s) to target (supports compare mode) ---
-    files_info = await call_list_files_route()
+    files_info = await list_files()
     available_files = [f["filename"] for f in files_info.get("files", [])]
     available_file_ids = [f["file_id"] for f in files_info.get("files", [])]
     active_file = get_last_active_file(session_id)
 
     file_inference_prompt = f"""
-    You determine which document(s) the user means.
+        You are a routing assistant. Determine what the user wants to do.
 
-    Conversation so far:
-    {prior_context}
+        Conversation so far:
+        {prior_context}
 
-    User just asked: "{query}"
+        User just asked: "{query}"
 
-    Available files (exact filenames): {available_files}
-    Currently active file: {active_file or 'None'}
+        Available files: {available_files}
+        Currently active file: {active_file or 'None'}
 
-    Rules:
-    - If user clearly names one doc or implies the last active doc, return that ONE exact filename.
-    - If user is comparing/asking about multiple docs (e.g., "compare", "vs", "both", or names multiple),
-    return the exact filenames separated by commas, in any order.
-    - If user says "all files" or similar, return the exact filenames for ALL available files, comma-separated.
-    - If uncertain, return "None".
+        Rules:
+        1. **LIST COMMAND**: If the user is asking to list, show, or display all available files (e.g. 'list files', 'what do you have', 'show inventory', 'how many files'), respond with exactly "COMMAND_LIST".
+        2. **DELETE COMMAND**: If the user explicitly asks to delete, remove, or erase a file, identify the closest filename from the list and respond with "COMMAND_DELETE: <exact_filename>".
+        3. **SPECIFIC FILE**: If the user mentions a file by name, partial name, or keyword (e.g. 'gatsby' for 'The-Great-Gatsby.pdf'), identify the best match from the list and return that ONE exact filename.
+        4. **COMPARE**: If user is comparing multiple docs, return exact filenames comma-separated.
+        5. **ALL FILES QUERY**: If user asks a question about "all files" (e.g. "summarize all files"), return "ALL_FILES".
+        6. **UNCERTAIN**: Return "None" only if no file in the list effectively matches the user's request.
 
-    Respond with ONLY the filename(s) from the list, comma-separated. No extra text.
-    """
+        Respond ONLY with the filename(s), "COMMAND_LIST", "ALL_FILES", or "None".
+        """
 
     inference = chat_completion(
         model="gpt-4o-mini",
@@ -157,10 +108,76 @@ async def ask_question(query: str = Form(...)):
     llm_raw = (inference.choices[0].message.content or "").strip()
     print(f"[LLM FILE INFERENCE RAW] {llm_raw}")
 
-    # Parse the LLM output
+    # === INTERCEPTOR: LIST FILES ===
+    if "COMMAND_LIST" in llm_raw:
+        # Execute list_files() directly here
+        files = files_info.get("files", [])
+        count = files_info.get("count", 0)
+
+        if count == 0:
+             return JSONResponse({"answer": "The database is empty.", "used_files": []})
+        
+        files.sort(key=lambda x: int(x.get("place", 0) or 0))
+
+        # Build clean HTML list
+        html_lines = [f"<h4>Found {count} file(s) in the database:</h4><ul>"]
+        for f in files:
+            fname = f.get("filename", "Unknown")
+            pages = f.get("total_pages", "?")
+            place = f.get("place", "?")
+            html_lines.append(f"<li><strong>{fname}</strong> (Place: {place}, Pages: {pages})</li>")
+        html_lines.append("</ul>")
+        
+        final_html = "".join(html_lines)
+        return JSONResponse({"answer": final_html, "used_files": []})
+    # === END INTERCEPTOR ===
+
+    # === INTERCEPTOR: DELETE FILE ===
+    if "COMMAND_DELETE:" in llm_raw:
+        target_filename = llm_raw.replace("COMMAND_DELETE:", "").strip()
+        
+        # Verify the file actually exists in our current list
+        files = files_info.get("files", [])
+        matched_file_id = next((f["file_id"] for f in files if f["filename"] == target_filename), None)
+
+        if not matched_file_id:
+            return JSONResponse({"answer": f"I understood you want to delete '{target_filename}', but I couldn't find that exact file ID in the database."})
+
+        try:
+            result = await delete_file_func(matched_file_id)
+            result_text = f"Deleted '{target_filename}'\n(File ID: {matched_file_id})\n\nRemaining files: {result.get('remaining_files', 0)}"
+            return JSONResponse({"answer": f"<pre>{result_text}</pre>", "used_files": []})
+        except Exception as e:
+            return JSONResponse({"answer": f"Error deleting '{target_filename}': {str(e)}"})
+    # === END INTERCEPTOR ===
+
+    # Proceed with file targeting logic
     tokens = [t.strip() for t in llm_raw.split(",") if t.strip()]
-    # Validate strictly against the available list
-    valid = [t for t in tokens if t in available_files]
+    
+    # --- ROBUST VALIDATION START ---
+    valid = []
+    # Create a map for case-insensitive lookup (Optimization)
+    filename_map = {f.lower(): f for f in available_files}
+    
+    for t in tokens:
+        # 1. Exact match (Fastest)
+        if t in available_files:
+            valid.append(t)
+        # 2. Case-insensitive match (Handles "gatsby" vs "Gatsby")
+        elif t.lower() in filename_map:
+            valid.append(filename_map[t.lower()])
+        # 3. Fuzzy match (Handles "Sleepy Hollow" vs "The-Legend-of-...")
+        else:
+            # Use the in-memory list 'available_files', not a DB call
+            closest = get_close_matches(t, available_files, n=1, cutoff=0.6)
+            if closest:
+                valid.append(closest[0])
+    # --- ROBUST VALIDATION END ---
+
+    # Handle "ALL_FILES" or fallbacks
+    if "ALL_FILES" in llm_raw or re.search(r"\b(compare|vs|versus|both|all files|all documents)\b", query, re.IGNORECASE):
+        if not valid:
+            valid = available_files[:]
 
     # Heuristics if model returns None/empty
     if not valid:
@@ -222,6 +239,27 @@ async def ask_question(query: str = Form(...)):
 
     # Create appropriate query embedding
     query_embedding = create_embedding("page lookup" if page_num else query)
+    
+    # === If user requested a specific page, render PDF page to base64 ===
+    page_image_b64 = None
+
+    if page_num and matched_file:
+        uploads_dir = Path(__file__).resolve().parents[2] / "uploads"
+        pdf_path = uploads_dir / matched_file
+
+        if pdf_path.exists():
+            try:
+                base64_str = render_page_to_base64(str(pdf_path), page_num)
+                if base64_str:
+                    page_image_b64 = f"data:image/png;base64,{base64_str}"
+                    print(f"[VISION] Rendered page {page_num} for {matched_file}")
+                else:
+                    print(f"[VISION] Could not render page {page_num}")
+            except Exception as e:
+                print(f"[VISION ERROR] {e}")
+        else:
+            print(f"[VISION] PDF not found: {pdf_path}")
+
 
 
     if re.search(r"\b(compare|both|all files)\b", query, re.IGNORECASE):
@@ -273,12 +311,28 @@ async def ask_question(query: str = Form(...)):
             })
 
 
-    # Return if no documents
+    # --- VISION FALLBACK ---
+    # If we found no text documents, but we HAVE a specific page image, 
+    # it means the page exists in the PDF but was skipped in the DB (Image-Only).
+    # We should proceed and let the LLM see the image.
     if not retrieved_docs:
-        return JSONResponse({"answer": "No relevant documents found."})
+        if page_image_b64 and matched_file and page_num:
+            # Create a fake "retrieved doc" so the pipeline continues
+            retrieved_docs = ["(No text found. Analyzing attached page image.)"]
+            retrieved_metas = [{
+                "source": matched_file,
+                "file_id": to_file_id(matched_file),
+                "page": page_num,
+                "place": "unknown",
+                "chunk_index": 0
+            }]
+            print(f"[VISION FALLBACK] Triggered for {matched_file} page {page_num}")
+        else:
+            return JSONResponse({"answer": "No relevant documents found."})
+    # -----------------------
 
     # Get full file metadata via list_files route (smarter and consistent)
-    files_info = await call_list_files_route()
+    files_info = await list_files()
     file_index = {
         f.get("file_id", "unknown"): {
             "source": f.get("filename", "unknown"),
@@ -429,15 +483,30 @@ async def ask_question(query: str = Form(...)):
     print(f"\n{user_prompt}\n")
 
     # Ask the LLM with the grouped context
+    messages = [
+        {"role": "system", "content": system_message},
+    ]
+
+    user_content = [
+        {"type": "text", "text": user_prompt}
+    ]
+
+    # Add image if page was specified
+    if page_image_b64:
+        user_content.append({
+            "type": "image_url",
+            "image_url": {"url": page_image_b64} 
+        })
+
+    messages.append({"role": "user", "content": user_content})
+
     completion = chat_completion(
         model="gpt-4o",
-        messages=[
-            {"role": "system", "content": system_message},
-            {"role": "user", "content": user_prompt}
-        ],
+        messages=messages,
         tools=tools,
         tool_choice="auto"
     )
+
     print(f"Initial Context\n{context}\nAdditional Prompting:\n{system_message}\n")
 
     # For traceability, also return which file IDs were included in the context
@@ -455,7 +524,7 @@ async def ask_question(query: str = Form(...)):
 
             if func_name == "list_files":
                 # return rich metadata lines
-                files_info = await call_list_files_route()
+                files_info = await list_files()
                 result_lines = []
                 for f in files_info.get("files", []):
                     filename = f.get("filename", "unknown")

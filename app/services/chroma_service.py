@@ -1,18 +1,9 @@
-from app.core.db import collection
+from app.core import db
+from app.core.db import load_database, ACTIVE_DB_NAME
 
-def query_collection(
-    query_embeddings=None,
-    query_embedding=None,
-    where=None,
-    n_results=10,
-    include=None
-):
-    """Wrapper around collection.query() that supports both single or multi-query style."""
-    # backward compatibility: allow either `query_embedding` or `query_embeddings`
-    if query_embeddings is None and query_embedding is not None:
-        query_embeddings = [query_embedding]
-
-    return collection.query(
+def query_collection(query_embeddings=None, where=None, n_results=10, include=None):
+    # CHANGE: Access db.collection dynamically
+    return db.collection.query(
         query_embeddings=query_embeddings,
         where=where if where else None,
         n_results=n_results,
@@ -20,7 +11,8 @@ def query_collection(
     )
 
 def add_to_collection(ids, embeddings, metadatas, documents):
-    collection.add(
+    # CHANGE: Access db.collection dynamically
+    db.collection.add(
         ids=ids,
         embeddings=embeddings,
         metadatas=metadatas,
@@ -28,7 +20,8 @@ def add_to_collection(ids, embeddings, metadatas, documents):
     )
 
 def delete_from_collection(file_id: str):
-    collection.delete(where={"file_id": file_id})
+    # CHANGE: Access db.collection dynamically
+    db.collection.delete(where={"file_id": file_id})
 
 def list_metadata():
-    return collection.get(include=["metadatas"])
+    return db.collection.get(include=["metadatas"])

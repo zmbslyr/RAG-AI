@@ -30,3 +30,7 @@ def set_last_active_file(session_id: str, filename: str):
     """Remember the file name for later follow-ups."""
     active_file_memory[session_id] = filename
 
+def clear_all_active_files():
+    """Clear active file context for all sessions (used when switching DBs)."""
+    active_file_memory.clear()
+    print("\n==========\n[DEBUG] active_file cleared\n==========\n")

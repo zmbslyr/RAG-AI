@@ -1,4 +1,4 @@
-from fastapi import APIRouter, UploadFile
+from fastapi import APIRouter, UploadFile, Depends
 from pathlib import Path
 import shutil
 import os
@@ -9,7 +9,8 @@ from datetime import datetime
 
 # Local imports
 from app.services.files_service import extract_text, split_text_into_chunks
-from app.core.db import collection
+from app.core import db
+from app.routes.auth import require_admin
 
 # Optional RTF import
 try:
@@ -60,7 +61,7 @@ def split_text_into_chunks(text: str):
 
 def get_next_available_place():
     """Find the lowest available 'place' number among existing files."""
-    results = collection.get(include=["metadatas"])
+    results = db.collection.get(include=["metadatas"])
     all_metadata = results.get("metadatas", []) if results else []
 
     existing_places = set()
@@ -87,7 +88,7 @@ def get_next_available_place():
 
 # --- Route: upload any supported file and store embeddings ---
 @router.post("/upload")
-async def upload_file(file: UploadFile):
+async def upload_file(file: UploadFile, user=Depends(require_admin)):
      # --- Save the uploaded file so it can be viewed later ---
     upload_dir = Path("uploads")
     upload_dir.mkdir(exist_ok=True)
@@ -99,7 +100,7 @@ async def upload_file(file: UploadFile):
     # Reset file pointer so PdfReader can read it again
     file.file.seek(0)
     # Get database place number
-    if collection:
+    if db.collection:
         db_place = get_next_available_place()
     else:
         db_place = 1
@@ -109,7 +110,7 @@ async def upload_file(file: UploadFile):
     normalized_id = Path(file.filename).stem.lower().replace(" ", "-")
     file_id = normalized_id
 
-    existing_files = collection.get(include=["metadatas"])["metadatas"]
+    existing_files = db.collection.get(include=["metadatas"])["metadatas"]
     existing_ids = {m.get("file_id") for m in existing_files if m.get("file_id")}
     if file_id in existing_ids:  # <-- compare the normalized id, not the UploadFile object
         print(f"\nDuplicate file detected. File: '{file.filename}' already exists in database\n")
@@ -123,7 +124,7 @@ async def upload_file(file: UploadFile):
     for page_number, page_text in pages:
         chunk_text = page_text.strip()
         if not chunk_text:
-            continue
+            chunk_text = "[IMAGE_ONLY_PAGE]"
 
         meta = {
             "source": file.filename,
@@ -148,7 +149,7 @@ async def upload_file(file: UploadFile):
         documents.append(chunk_text)
         embeddings.append(emb)
 
-    collection.add(
+    db.collection.add(
         ids=ids,
         embeddings=embeddings,
         metadatas=metadatas,
