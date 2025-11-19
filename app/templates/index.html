@@ -59,9 +59,13 @@
       <section class="right-pane">
         <header class="pane-header">
           <strong>RAG PDF Assistant</strong>
+          <button id="logoutBtn" class="logout-btn">Logout</button>
         </header>
-
-        <section class="upload-section">
+        <div id="db-controls" class="db-controls" style="padding: 10px 14px;">
+          <label for="dbSelect">Database:</label>
+          <select id="dbSelect"></select>
+        </div>
+        <section id="upload-section" class="upload-section">
           <form id="uploadForm" enctype="multipart/form-data">
             <input type="file" id="pdfFile" name="file" accept=".pdf,.txt,.rtf,.utf-8" required />
             <button type="submit">Upload</button>
@@ -77,11 +81,6 @@
 
         <section class="chat-section">
           <div id="chatLog" class="chat-log"></div>
-
-          <div class="quick-ask">
-            <button id="askPageBtn" type="button">Ask about this page</button>
-          </div>
-
           <form id="askForm" class="chat-input">
             <textarea id="query" name="query" placeholder="Ask something..." autocomplete="off" required></textarea>
             <button type="submit">Send</button>
