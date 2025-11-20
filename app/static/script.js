@@ -22,13 +22,12 @@ document.addEventListener("DOMContentLoaded", async () => {
   const pdfViewer    = document.getElementById("pdfViewer");
   const uploadStatus = document.getElementById("uploadStatus");
   const processingContainer = document.getElementById("processingContainer");
+  const chatLog      = document.getElementById("chatLog");
 
   const logoutBtn = document.getElementById("logoutBtn");
   if (logoutBtn) {
       logoutBtn.addEventListener("click", () => {
-          // 1. Remove the token
           localStorage.removeItem("authToken");
-          // 2. Reload the page to reset all JS state and show Login modal
           window.location.reload();
       });
   }
@@ -48,12 +47,8 @@ document.addEventListener("DOMContentLoaded", async () => {
     return res;
   };
 
-  function showLogin() {
-    if (loginModal) loginModal.style.display = "flex";
-  }
-  function hideLogin() {
-    if (loginModal) loginModal.style.display = "none";
-  }
+  function showLogin() { if (loginModal) loginModal.style.display = "flex"; }
+  function hideLogin() { if (loginModal) loginModal.style.display = "none"; }
 
   function getUserRole() {
       if (!authToken) return null;
@@ -69,9 +64,9 @@ document.addEventListener("DOMContentLoaded", async () => {
     const role = getUserRole();
     const uploadSection = document.getElementById("upload-section");
     if (uploadSection) {
-        uploadSection.style.display = (role === "admin") ? "flex" : "none";
+        uploadSection.style.display = (role === "admin") ? "grid" : "none"; // Note: grid for layout
     }
-    const dbSection = document.getElementById("db-controls");
+    const dbSection = document.getElementById("dbControlsSection");
     if (dbSection) {
       dbSection.style.display = (role === "admin") ? "flex" : "none";
     }
@@ -80,20 +75,15 @@ document.addEventListener("DOMContentLoaded", async () => {
   // 3. Database UI Logic
   async function loadDatabasesUI() {
     if (!dbSelect) return;
-    
     try {
-      console.log("Fetching databases...");
-      // Fetch list of databases
       const listRes = await window.authFetch("/databases");
       if (!listRes.ok) throw new Error("Failed to list databases");
       const listData = await listRes.json();
       
-      // Fetch active database
       const activeRes = await window.authFetch("/active_database");
       if (!activeRes.ok) throw new Error("Failed to get active database");
       const activeData = await activeRes.json();
 
-      // Populate Dropdown
       dbSelect.innerHTML = "";
       const dbs = listData.databases || [];
       
@@ -111,10 +101,8 @@ document.addEventListener("DOMContentLoaded", async () => {
         });
       }
 
-      // Set Active Selection
       dbSelect.value = activeData.active;
 
-      // Attach Change Listener (One-time setup)
       dbSelect.onchange = async () => {
         const newDb = dbSelect.value;
         if (confirm(`Switch database to "${newDb}"? The page will reload.`)) {
@@ -125,7 +113,6 @@ document.addEventListener("DOMContentLoaded", async () => {
              alert("Error switching database: " + e.message);
            }
         } else {
-           // Reset to previous if cancelled
            dbSelect.value = activeData.active;
         }
       };
@@ -140,12 +127,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       const res = await window.authFetch("/list_files");
       const data = await res.json();
 
-      const files = (data.files || [])
-        .filter(f => (f.filename || "").toLowerCase().endsWith(".pdf"))
-        .map(f => ({
-          filename: f.filename,
-          file_id: f.file_id
-        }));
+      const files = (data.files || []).filter(f => (f.filename || "").toLowerCase().endsWith(".pdf"));
 
       filesIndex = files;
       fileSelect.innerHTML = "";
@@ -165,55 +147,39 @@ document.addEventListener("DOMContentLoaded", async () => {
           opt.textContent = f.filename;
           fileSelect.appendChild(opt);
         });
-        
-        // Auto-select first if none selected
-        if (!currentFile) setViewer(files[0].filename);
+        if (!currentFile && files.length > 0) setViewer(files[0].filename);
       }
     } catch (e) {
       console.error("Failed to load files:", e);
     }
   }
 
-function setViewer(filename, page = 1) {
+  function setViewer(filename, page = 1) {
     if (!filename) return;
     currentFile = filename;
     const encoded = encodeURIComponent(filename);
-    
-    // CHANGE: Add a timestamp 't' to force the browser to reload the iframe 
-    // even if the file is the same (fixes the "click doesn't scroll" bug).
     const timestamp = new Date().getTime();
     pdfViewer.src = `/uploads/${encoded}?t=${timestamp}#page=${page}`;
     
-    // Sync dropdown
-    if (fileSelect && fileSelect.options) {
+    if (fileSelect) {
         for (const opt of fileSelect.options) {
             if (opt.value === filename) opt.selected = true;
         }
     }
   }
   
-  // Global viewer helper
-  window.openInViewer = function(filename, page) {
-      setViewer(filename, page);
-  };
+  window.openInViewer = function(filename, page) { setViewer(filename, page); };
 
-  // 5. Event Listeners (Login/Register/Upload/Chat)
-  
+  // 5. Event Listeners
   if (loginForm) {
     loginForm.addEventListener("submit", async (e) => {
       e.preventDefault();
-      const username = document.getElementById("loginUsername").value;
-      const password = document.getElementById("loginPassword").value;
-      
+      const u = document.getElementById("loginUsername").value;
+      const p = document.getElementById("loginPassword").value;
       const body = new URLSearchParams();
-      body.append("username", username);
-      body.append("password", password);
+      body.append("username", u); body.append("password", p);
 
-      const res = await fetch("/auth/token", {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body
-      });
+      const res = await fetch("/auth/token", { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body });
       const data = await res.json();
       
       if (res.ok && data.access_token) {
@@ -221,7 +187,7 @@ function setViewer(filename, page = 1) {
         localStorage.setItem("authToken", authToken);
         hideLogin();
         applyRoleUI();
-        loadDatabasesUI(); // Load DBs after login
+        loadDatabasesUI();
         refreshFiles();
       } else {
         alert(data.detail || "Login failed");
@@ -232,13 +198,9 @@ function setViewer(filename, page = 1) {
   if (registerForm) {
     registerForm.addEventListener("submit", async (e) => {
       e.preventDefault();
-      const username = document.getElementById("registerUsername").value;
-      const password = document.getElementById("registerPassword").value;
-      const res = await fetch("/auth/register", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username, password })
-      });
+      const u = document.getElementById("registerUsername").value;
+      const p = document.getElementById("registerPassword").value;
+      const res = await fetch("/auth/register", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username: u, password: p }) });
       if (res.ok) {
         alert("Registered! Please login.");
         registerForm.style.display = "none";
@@ -288,8 +250,12 @@ function setViewer(filename, page = 1) {
       const q = queryBox.value.trim();
       if (!q) return;
       
+      // Add User Message
       appendMessage("user", q);
       queryBox.value = "";
+      queryBox.style.height = "auto"; // reset height
+
+      // Add Thinking Placeholder
       appendThinkingMessage();
 
       const formData = new FormData();
@@ -309,55 +275,58 @@ function setViewer(filename, page = 1) {
   
   fileSelect.onchange = () => setViewer(fileSelect.value);
 
-  // 6. Initialization Logic
-  if (!authToken) {
-    showLogin();
-  } else {
-    // Ensure these run if user is already logged in
-    applyRoleUI();
-    loadDatabasesUI();
-    refreshFiles();
-  }
+  // === CHAT UI FUNCTIONS ===
   
-  // Chat Helper Functions
-  const chatLog = document.getElementById("chatLog");
   function appendMessage(role, html) {
-    const msg = document.createElement("div");
-    msg.className = `message ${role}`;
-    msg.innerHTML = `<div class="bubble">${html}</div>`;
-    chatLog.appendChild(msg);
+    const isUser = role === "user";
+    const avatarLabel = isUser ? "You" : "AI";
+    const avatarClass = isUser ? "user-avatar" : "ai-avatar";
+
+    // Build the "Row" structure
+    const row = document.createElement("div");
+    row.className = `message-row ${role}`;
+
+    row.innerHTML = `
+      <div class="message-inner">
+        <div class="avatar ${avatarClass}">${isUser ? "U" : "AI"}</div>
+        <div class="message-content">${html}</div>
+      </div>
+    `;
+
+    chatLog.appendChild(row);
     chatLog.scrollTop = chatLog.scrollHeight;
   }
+
   function appendThinkingMessage() {
-    const msg = document.createElement("div");
-    msg.className = "message assistant";
-    msg.innerHTML = `<div class="bubble">Thinking<span class="thinking-dots"><span></span></span></div>`;
-    chatLog.appendChild(msg);
+    const row = document.createElement("div");
+    row.className = "message-row assistant thinking-row";
+    row.innerHTML = `
+      <div class="message-inner">
+        <div class="avatar ai-avatar">AI</div>
+        <div class="message-content">Thinking<span class="thinking-dots"></span></div>
+      </div>
+    `;
+    chatLog.appendChild(row);
     chatLog.scrollTop = chatLog.scrollHeight;
-    let dot = 0;
-    msg.interval = setInterval(() => {
-       dot = (dot+1)%4; 
-       msg.querySelector(".thinking-dots span").textContent = ".".repeat(dot);
-    }, 400);
   }
+
   function removeLastAssistantMessage() {
-    const msgs = chatLog.getElementsByClassName("message");
-    for (let i=msgs.length-1; i>=0; i--) {
-      if (msgs[i].classList.contains("assistant")) {
-        if (msgs[i].interval) clearInterval(msgs[i].interval);
-        msgs[i].remove();
+    // Find the last row that is an assistant row
+    const rows = chatLog.getElementsByClassName("message-row");
+    for (let i = rows.length - 1; i >= 0; i--) {
+      if (rows[i].classList.contains("assistant")) {
+        rows[i].remove();
         break;
       }
     }
   }
-  
-// Click delegation for chat links
+
+  // Click delegation for chat links
   if (chatLog) {
       chatLog.addEventListener("click", (e) => {
         const a = e.target.closest("a.open-in-viewer");
         if (a) {
             e.preventDefault();
-            console.log("Clicked source link:", a.dataset.file, "Page:", a.dataset.page); // Debug log
             window.openInViewer(a.dataset.file, a.dataset.page);
         }
       });
@@ -366,7 +335,7 @@ function setViewer(filename, page = 1) {
   // Auto-resize query box
   queryBox.oninput = () => {
       queryBox.style.height = "auto";
-      queryBox.style.height = Math.min(queryBox.scrollHeight, 120) + "px";
+      queryBox.style.height = Math.min(queryBox.scrollHeight, 200) + "px";
   };
   queryBox.onkeydown = (e) => {
       if (e.key === "Enter" && !e.shiftKey) {
@@ -375,4 +344,12 @@ function setViewer(filename, page = 1) {
       }
   };
 
+  // Init
+  if (!authToken) {
+    showLogin();
+  } else {
+    applyRoleUI();
+    loadDatabasesUI();
+    refreshFiles();
+  }
 });

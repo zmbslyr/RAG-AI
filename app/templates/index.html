@@ -2,50 +2,23 @@
 <html lang="en">
   <head>
     <style>
-    .modal {
-      display: none;
-      position: fixed;
-      top: 0; left: 0;
-      width: 100%; height: 100%;
-      background: rgba(0,0,0,0.6);
-      justify-content: center;
-      align-items: center;
-      z-index: 2000;
-    }
-    .modal-content {
-      background: white;
-      padding: 20px 30px;
-      border-radius: 12px;
-      width: 300px;
-      box-shadow: 0 4px 20px rgba(0,0,0,0.3);
-    }
+    /* Keep Modal styles inline or move to CSS */
+    .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.6); justify-content: center; align-items: center; z-index: 2000; }
+    .modal-content { background: white; padding: 20px 30px; border-radius: 12px; width: 300px; box-shadow: 0 4px 20px rgba(0,0,0,0.3); }
     .modal-content h2 { margin-top: 0; }
-    .modal-content input {
-      width: 100%;
-      margin-bottom: 10px;
-      padding: 8px;
-    }
-    .modal-content button {
-      background: var(--brand);
-      color: white;
-      border: none;
-      border-radius: 6px;
-      padding: 8px 12px;
-      cursor: pointer;
-    }
+    .modal-content input { width: 100%; margin-bottom: 10px; padding: 8px; border:1px solid #ccc; border-radius:4px; }
+    .modal-content button { background: #2d6cdf; color: white; border: none; border-radius: 6px; padding: 8px 12px; cursor: pointer; width: 100%; }
     </style>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>RAG PDF Assistant</title>
-    <!-- add a cache-buster so you don't see old CSS -->
-    <link rel="stylesheet" href="/static/style.css?v=2" />
+    <link rel="stylesheet" href="/static/style.css?v=3" />
   </head>
   <body>
     <div class="app">
-      <!-- LEFT: PDF Viewer -->
       <section class="left-pane">
         <header class="pane-header">
-          <strong>PDF Viewer</strong>
+          <span>PDF Viewer</span>
           <div class="viewer-controls">
             <select id="fileSelect" title="Choose a PDF"></select>
           </div>
@@ -55,43 +28,58 @@
         </div>
       </section>
 
-      <!-- RIGHT: Upload + Chat -->
       <section class="right-pane">
         <header class="pane-header">
-          <strong>RAG PDF Assistant</strong>
+          <span>AI Assistant</span>
           <button id="logoutBtn" class="logout-btn">Logout</button>
         </header>
-        <div id="db-controls" class="db-controls" style="padding: 10px 14px;">
+        
+        <div id="dbControlsSection" class="db-controls">
           <label for="dbSelect">Database:</label>
           <select id="dbSelect"></select>
         </div>
+
         <section id="upload-section" class="upload-section">
-          <form id="uploadForm" enctype="multipart/form-data">
+          <form id="uploadForm" class="upload-form-row">
             <input type="file" id="pdfFile" name="file" accept=".pdf,.txt,.rtf,.utf-8" required />
-            <button type="submit">Upload</button>
+            <button type="submit" class="upload-btn">Upload</button>
           </form>
 
-          <div id="processingContainer" class="processing-container" style="display:none;">
-            <div class="spinner"></div>
-            <div class="processing-text">Processing<span id="dots"></span></div>
+          <div class="upload-status-area">
+             <div id="processingContainer" class="processing-container" style="display:none;">
+                <div class="spinner"></div>
+                <span>Processing...</span>
+             </div>
+             <span id="uploadStatus"></span>
           </div>
-
-          <p id="uploadStatus"></p>
         </section>
 
         <section class="chat-section">
-          <div id="chatLog" class="chat-log"></div>
-          <form id="askForm" class="chat-input">
-            <textarea id="query" name="query" placeholder="Ask something..." autocomplete="off" required></textarea>
-            <button type="submit">Send</button>
-          </form>
+          <div id="chatLog" class="chat-log">
+            <div class="message-row assistant">
+                <div class="message-inner">
+                    <div class="avatar ai-avatar">AI</div>
+                    <div class="message-content">
+                        <p>Hello! Ask me questions about your documents.</p>
+                    </div>
+                </div>
+             </div>
+          </div>
+          
+          <div class="input-container">
+             <form id="askForm" class="input-wrapper">
+                <textarea id="query" name="query" placeholder="Message the assistant..." rows="1" required></textarea>
+                <button type="submit" class="send-btn" title="Send">
+                    <svg viewBox="0 0 24 24"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+                </button>
+             </form>
+          </div>
         </section>
       </section>
     </div>
 
-    <script src="/static/script.js?v=2" defer></script>
+    <script src="/static/script.js?v=3" defer></script>
 
-    <!-- LOGIN MODAL -->
     <div id="loginModal" class="modal">
       <div class="modal-content">
         <h2>Login</h2>
@@ -102,7 +90,7 @@
           <input type="password" id="loginPassword" required />
           <button type="submit">Login</button>
         </form>
-        <p>Don’t have an account? <a href="#" id="registerLink">Register</a></p>
+        <p style="margin-top:10px; font-size:0.9rem;">Don’t have an account? <a href="#" id="registerLink">Register</a></p>
 
         <form id="registerForm" style="display:none;">
           <label>Username:</label>
@@ -110,7 +98,7 @@
           <label>Password:</label>
           <input type="password" id="registerPassword" required />
           <button type="submit">Register</button>
-          <p><a href="#" id="backToLogin">Back to login</a></p>
+          <p style="margin-top:10px; font-size:0.9rem;"><a href="#" id="backToLogin">Back to login</a></p>
         </form>
       </div>
     </div>
