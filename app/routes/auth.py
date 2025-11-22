@@ -81,14 +81,18 @@ async def register(payload: RegisterRequest):
     users_db[username] = {
         "username": username,
         "hashed_password": get_password_hash(password),
-        "created_at": datetime.utcnow().isoformat(),
+        "created_at": datetime.now().isoformat(),
         "role": "user"
     }
     save_users(users_db)
+    print(f"""
+        User: {username} created.
+        Password saved.
+        Created at: {datetime.now().isoformat()}.
+        """
+        )
 
     return {"message": f"User '{username}' registered successfully."}
-
-
 
 @router.post("/token")
 async def login(form_data: OAuth2PasswordRequestForm = Depends()):
@@ -101,6 +105,7 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends()):
         data={"sub": user["username"], "role": user.get("role", "user")},
         expires_delta=access_token_expires
     )
+    print(f"\n{user['username']} has logged in at {datetime.now().isoformat()}\n")
     return {"access_token": access_token, "token_type": "bearer"}
 
 
@@ -116,6 +121,12 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
         return user
     except JWTError:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials.")
+
+@router.post("/logout")
+async def logout(current_user: dict = Depends(get_current_user)):
+    """Log the user out (informational only)."""
+    print(f"\n{current_user['username']} has logged out at {datetime.now().isoformat()}\n")
+    return {"message": "Logout logged successfully"}
 
 async def require_admin(user=Depends(get_current_user)):
     if user.get("role") != "admin":

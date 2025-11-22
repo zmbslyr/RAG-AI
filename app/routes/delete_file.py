@@ -1,17 +1,17 @@
 # app/routes/delete_file.py
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from pathlib import Path
 import os
 
 # Local imports
 from app.services.chroma_service import add_to_collection, query_collection, delete_from_collection
-from app.services.openai_service import create_embedding
 from app.routes.list_files import list_files
+from app.routes.auth import require_admin
 
 router = APIRouter()
 
 @router.delete("/delete_file/{file_id}")
-async def delete_file(file_id: str):
+async def delete_file(file_id: str, user=Depends(require_admin)):
     """
     Delete a file and its embeddings from the Chroma DB and remove the uploaded file.
     """

@@ -2,12 +2,13 @@ from fastapi import APIRouter, UploadFile, Depends
 from pathlib import Path
 import shutil
 import os
-from openai import OpenAI
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from pypdf import PdfReader
 from datetime import datetime
 
 # Local imports
+from app.core.settings import settings
+from app.services.llm_service import llm_client
 from app.services.files_service import extract_text, split_text_into_chunks
 from app.core import db
 from app.routes.auth import require_admin
@@ -19,8 +20,6 @@ except ImportError:
     striprtf = None
 
 router = APIRouter()
-client_openai = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-
 
 # --- Helpers ---
 def extract_text(file: UploadFile):
@@ -117,7 +116,7 @@ async def upload_file(file: UploadFile, user=Depends(require_admin)):
         return {"message": f"Duplicate upload skipped: '{file.filename}' already exists in database."}
 
     uploaded_at = datetime.now().isoformat()
-    embedding_model = "text-embedding-3-large"
+    embedding_model = settings.EMBEDDING_MODEL
 
     ids, metadatas, documents, embeddings = [], [], [], []
 
@@ -138,10 +137,7 @@ async def upload_file(file: UploadFile, user=Depends(require_admin)):
         }
         print(f"\n\n{meta}\n\n")
 
-        emb = client_openai.embeddings.create(
-            model="text-embedding-3-large",
-            input=chunk_text
-        ).data[0].embedding
+        emb = await llm_client.get_embedding(chunk_text)
 
         unique_prefix = f"{file_id}-{os.urandom(4).hex()}"
         ids.append(f"{unique_prefix}-page-{page_number}")

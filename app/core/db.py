@@ -2,7 +2,8 @@
 import chromadb
 import json
 from pathlib import Path
-from openai import OpenAI
+
+# Local imports
 from app.core.settings import settings
 
 # Determine project root (RAG AI/)
@@ -35,9 +36,6 @@ def load_active_db_name():
 
 # Load stored DB name (or default)
 ACTIVE_DB_NAME = load_active_db_name()
-
-client_openai = OpenAI(api_key=settings.OPENAI_API_KEY)
-
 
 def load_database(name: str):
     global ACTIVE_DB_NAME, chroma_client, collection

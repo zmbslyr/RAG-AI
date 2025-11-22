@@ -1,20 +1,22 @@
 # app/routes/ask_question.py
-from fastapi import APIRouter, Form
+from fastapi import APIRouter, Form, Depends
 from fastapi.responses import JSONResponse
 import re
 import json
 import markdown
 from difflib import get_close_matches
 from pathlib import Path
+import urllib.parse
 
 # Local Imports
-from app.services.openai_service import create_embedding, chat_completion
+from app.services.llm_service import llm_client
 from app.services.chroma_service import query_collection
 from app.memory import session_memory, get_session_context, update_session_memory, get_last_active_file, set_last_active_file
 from app.services.files_service import render_page_to_base64
 from app.routes.list_files import list_files
 from app.routes.debug_metadata import debug_metadata
 from app.routes.delete_file import delete_file as delete_file_func
+from app.routes.auth import get_current_user
 
 # --- Helper to normalize filename to file_id ---
 def to_file_id(filename: str) -> str:
@@ -41,7 +43,7 @@ router = APIRouter()
 
 # --- Route: ask question ---
 @router.post("/ask")
-async def ask_question(query: str = Form(...)):
+async def ask_question(query: str = Form(...), user: dict = Depends(get_current_user)):
 
     # --- Conversation memory setup ---
     # Generate or retrieve a session ID (in production, send from frontend)
@@ -98,10 +100,10 @@ async def ask_question(query: str = Form(...)):
         5. **ALL FILES QUERY**: If user asks a question about "all files" (e.g. "summarize all files"), return "ALL_FILES".
         6. **UNCERTAIN**: Return "None" only if no file in the list effectively matches the user's request.
 
-        Respond ONLY with the filename(s), "COMMAND_LIST", "ALL_FILES", or "None".
+        Respond ONLY with the filename(s), "COMMAND_LIST", "COMMAND_DELETE: <exact_filename>", "ALL_FILES", or "None".
         """
 
-    inference = chat_completion(
+    inference = await llm_client.chat(
         model="gpt-4o-mini",
         messages=[{"role": "user", "content": file_inference_prompt}],
     )
@@ -134,6 +136,11 @@ async def ask_question(query: str = Form(...)):
 
     # === INTERCEPTOR: DELETE FILE ===
     if "COMMAND_DELETE:" in llm_raw:
+        if user.get("role") != "admin":
+            return JSONResponse({
+                "answer": "I'm sorry, I cannot delete that file. You do not have administrator privileges.",
+                "used_files": []
+            })
         target_filename = llm_raw.replace("COMMAND_DELETE:", "").strip()
         
         # Verify the file actually exists in our current list
@@ -160,13 +167,13 @@ async def ask_question(query: str = Form(...)):
     filename_map = {f.lower(): f for f in available_files}
     
     for t in tokens:
-        # 1. Exact match (Fastest)
+        # Exact match (Fastest)
         if t in available_files:
             valid.append(t)
-        # 2. Case-insensitive match (Handles "gatsby" vs "Gatsby")
+        # Case-insensitive match (Handles "gatsby" vs "Gatsby")
         elif t.lower() in filename_map:
             valid.append(filename_map[t.lower()])
-        # 3. Fuzzy match (Handles "Sleepy Hollow" vs "The-Legend-of-...")
+        # Fuzzy match (Handles "Sleepy Hollow" vs "The-Legend-of-...")
         else:
             # Use the in-memory list 'available_files', not a DB call
             closest = get_close_matches(t, available_files, n=1, cutoff=0.6)
@@ -238,7 +245,7 @@ async def ask_question(query: str = Form(...)):
     print("=================================\n")
 
     # Create appropriate query embedding
-    query_embedding = create_embedding("page lookup" if page_num else query)
+    query_embedding = await llm_client.get_embedding("page lookup" if page_num else query)
     
     # === If user requested a specific page, render PDF page to base64 ===
     page_image_b64 = None
@@ -500,7 +507,7 @@ async def ask_question(query: str = Form(...)):
 
     messages.append({"role": "user", "content": user_content})
 
-    completion = chat_completion(
+    completion = await llm_client.chat(
         model="gpt-4o",
         messages=messages,
         tools=tools,
@@ -566,7 +573,7 @@ async def ask_question(query: str = Form(...)):
                 })
 
         # Now feed all tool responses back to the model at once
-        second_response = chat_completion(
+        second_response = await llm_client.chat(
             model="gpt-4o",
             messages=[
                 {"role": "system", "content": system_message},
