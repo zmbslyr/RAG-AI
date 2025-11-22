@@ -7,7 +7,7 @@ let currentFile = null;
 
 // === DOM LOADED ===
 document.addEventListener("DOMContentLoaded", async () => {
-  // 1. Setup UI references
+  // Setup UI references
   const loginModal   = document.getElementById("loginModal");
   const loginForm    = document.getElementById("loginForm");
   const registerForm = document.getElementById("registerForm");
@@ -26,13 +26,23 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   const logoutBtn = document.getElementById("logoutBtn");
   if (logoutBtn) {
-      logoutBtn.addEventListener("click", () => {
+      logoutBtn.addEventListener("click", async (e) => {
+        e.preventDefault()
+        // Notify backend (optional: wrap in try/catch so errors don't block logout)
+        if (authToken) {
+            try {
+                await window.authFetch("/auth/logout", { method: "POST" });
+            } catch (err) {
+               console.warn("Failed to notify server of logout:", err);              }
+        }
+
+          // Clear client state and reload
           localStorage.removeItem("authToken");
           window.location.reload();
       });
   }
 
-  // 2. Define Auth & Fetch Helpers
+  // Define Auth & Fetch Helpers
   window.authFetch = async function(url, options = {}) {
     const opts = { ...options, headers: { ...(options.headers || {}) } };
     if (authToken) opts.headers["Authorization"] = `Bearer ${authToken}`;
@@ -72,7 +82,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
   }
 
-  // 3. Database UI Logic
+  // Database UI Logic
   async function loadDatabasesUI() {
     if (!dbSelect) return;
     try {
@@ -121,7 +131,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
   }
 
-  // 4. Files & Viewer Logic
+  // Files & Viewer Logic
   async function refreshFiles() {
     try {
       const res = await window.authFetch("/list_files");
@@ -170,7 +180,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   
   window.openInViewer = function(filename, page) { setViewer(filename, page); };
 
-  // 5. Event Listeners
+  // Event Listeners
   if (loginForm) {
     loginForm.addEventListener("submit", async (e) => {
       e.preventDefault();
