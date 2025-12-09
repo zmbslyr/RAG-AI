@@ -164,6 +164,37 @@ body {
   gap: 0;
 }
 
+/* Pro Chatbot Styling */
+.message-content table {
+  border-collapse: collapse;
+  margin: 15px 0;
+  width: 100%;
+  font-size: 0.95rem;
+  border-radius: 8px;
+  overflow: hidden; /* Rounds the corners */
+  box-shadow: 0 0 0 1px #e5e7eb; /* Subtle border */
+}
+
+.message-content th {
+  background-color: #f8f9fa;
+  font-weight: 600;
+  text-align: left;
+  padding: 10px 14px;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.message-content td {
+  padding: 10px 14px;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.message-content h3 {
+  font-size: 1.1rem;
+  margin-top: 20px;
+  margin-bottom: 10px;
+  color: #1f2937;
+}
+
 /* Base Row Style */
 .message-row {
   display: flex;
