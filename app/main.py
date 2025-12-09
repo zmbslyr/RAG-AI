@@ -13,6 +13,32 @@ from fastapi import Depends
 from app.core import db as db_core
 from app.routes.auth import require_admin
 from app.memory import clear_all_active_files
+from app.core.authdb import engine, Base
+from app.core.authdb import engine, Base, SessionLocal
+from app.core.security import get_password_hash
+from app import models
+
+# Initialize users, chat history, and audit tables if they don't exist
+Base.metadata.create_all(bind=engine)
+
+# --- SEED DEFAULT ADMIN USER ---
+try:
+    db = SessionLocal()
+    # Check if admin exists
+    if not db.query(models.User).filter(models.User.username == "admin").first():
+        print("--- Seeding Default Admin Account ---")
+        admin_user = models.User(
+            username="admin",
+            hashed_password=get_password_hash("password"), # Hashes 'password'
+            role="admin"
+        )
+        db.add(admin_user)
+        db.commit()
+        print("Admin user created: user='admin', password='password'")
+    db.close()
+except Exception as e:
+    print(f"Error seeding admin user: {e}")
+# -------------------------------
 
 # Initialize app
 app = FastAPI()
