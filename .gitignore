@@ -43,3 +43,4 @@ uploads/
 
 # --- User Login info
 app/users/
+app.db
