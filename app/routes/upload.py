@@ -2,14 +2,12 @@ from fastapi import APIRouter, UploadFile, Depends
 from pathlib import Path
 import shutil
 import os
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from pypdf import PdfReader
 from datetime import datetime
 
 # Local imports
 from app.core.settings import settings
 from app.services.llm_service import llm_client
-from app.services.files_service import extract_text, split_text_into_chunks
+from app.services.files_service import extract_text
 from app.core import db
 from app.routes.auth import require_admin
 
@@ -22,42 +20,6 @@ except ImportError:
 router = APIRouter()
 
 # --- Helpers ---
-def extract_text(file: UploadFile):
-    filename = file.filename.lower()
-
-    if filename.endswith(".pdf"):
-        reader = PdfReader(file.file)
-        pages = [(i + 1, page.extract_text() or "") for i, page in enumerate(reader.pages)]
-        return pages
-
-    elif filename.endswith((".txt", ".utf-8")):
-        content = file.file.read()
-        try:
-            text = content.decode("utf-8")
-        except UnicodeDecodeError:
-            text = content.decode("latin-1", errors="ignore")
-        return [(1, text)]
-
-    elif filename.endswith(".rtf"):
-        if not striprtf:
-            raise RuntimeError("striprtf package not installed. Run `pip install striprtf`.")
-        raw_data = file.file.read().decode("utf-8", errors="ignore")
-        text = striprtf.striprtf.rtf_to_text(raw_data)
-        return [(1, text)]
-
-    else:
-        content = file.file.read()
-        try:
-            text = content.decode("utf-8")
-        except Exception:
-            text = ""
-        return [(1, text)]
-
-
-def split_text_into_chunks(text: str):
-    splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
-    return splitter.split_text(text)
-
 def get_next_available_place():
     """Find the lowest available 'place' number among existing files."""
     results = db.collection.get(include=["metadatas"])
@@ -119,11 +81,20 @@ async def upload_file(file: UploadFile, user=Depends(require_admin)):
     embedding_model = settings.EMBEDDING_MODEL
 
     ids, metadatas, documents, embeddings = [], [], [], []
+    overlap_size = 200
+    previous_text_tail = ""
 
     for page_number, page_text in pages:
-        chunk_text = page_text.strip()
-        if not chunk_text:
-            chunk_text = "[IMAGE_ONLY_PAGE]"
+        raw_text = page_text.strip()
+        combined_text = (previous_text_tail + "\n\n" + raw_text).strip()
+        # Grab the last 200 chars of the CURRENT page
+        if len(raw_text) > overlap_size:
+            previous_text_tail = raw_text[-overlap_size:]
+        else:
+            previous_text_tail = raw_text
+        # Handle empty pages (scans)
+        if not combined_text:
+            combined_text = "[IMAGE_ONLY_PAGE]"
 
         meta = {
             "source": file.filename,
@@ -131,18 +102,18 @@ async def upload_file(file: UploadFile, user=Depends(require_admin)):
             "place": db_place,
             "page": page_number,
             "pages": max_pages,
-            "char_count": len(chunk_text),
+            "char_count": len(combined_text),
             "embedding_model": embedding_model,
             "uploaded_at": uploaded_at
         }
         print(f"\n\n{meta}\n\n")
 
-        emb = await llm_client.get_embedding(chunk_text)
+        emb = await llm_client.get_embedding(combined_text)
 
         unique_prefix = f"{file_id}-{os.urandom(4).hex()}"
         ids.append(f"{unique_prefix}-page-{page_number}")
         metadatas.append(meta)
-        documents.append(chunk_text)
+        documents.append(combined_text)
         embeddings.append(emb)
 
     db.collection.add(
