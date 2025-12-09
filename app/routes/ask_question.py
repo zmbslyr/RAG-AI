@@ -71,9 +71,19 @@ async def ask_question(query: str = Form(...), user: dict = Depends(get_current_
         debug_html = f"<pre>{debug_json}</pre>"
         return JSONResponse({"answer": debug_html, "used_files": []})
 
-    # Detect a page number (like "page 3")
-    page_match = re.search(r"page\s+(\d+)", query, re.IGNORECASE)
-    page_num = int(page_match.group(1)) if page_match else None
+    # Detect page number(s) (e.g. "page 3", "pages 3, 4, 5")
+    page_section_matches = re.findall(r"pages?\s+([\d\s,and&]+)", query, re.IGNORECASE)
+    target_pages = []
+    for section in page_section_matches:
+        # Extract individual digits from the captured phrase
+        nums = re.findall(r"\d+", section)
+        target_pages.extend([int(n) for n in nums])
+    
+    # Deduplicate and sort
+    target_pages = sorted(list(set(target_pages)))
+    
+    # Keep 'page_num' as the first page found (for Vision/Image fallback support)
+    page_num = target_pages[0] if target_pages else None
 
     # --- Ask the LLM to infer which file(s) to target (supports compare mode) ---
     files_info = await list_files()
@@ -95,10 +105,11 @@ async def ask_question(query: str = Form(...), user: dict = Depends(get_current_
         Rules:
         1. **LIST COMMAND**: If the user is asking to list, show, or display all available files (e.g. 'list files', 'what do you have', 'show inventory', 'how many files'), respond with exactly "COMMAND_LIST".
         2. **DELETE COMMAND**: If the user explicitly asks to delete, remove, or erase a file, identify the closest filename from the list and respond with "COMMAND_DELETE: <exact_filename>".
-        3. **SPECIFIC FILE**: If the user mentions a file by name, partial name, or keyword (e.g. 'gatsby' for 'The-Great-Gatsby.pdf'), identify the best match from the list and return that ONE exact filename.
-        4. **COMPARE**: If user is comparing multiple docs, return exact filenames comma-separated.
-        5. **ALL FILES QUERY**: If user asks a question about "all files" (e.g. "summarize all files"), return "ALL_FILES".
-        6. **UNCERTAIN**: Return "None" only if no file in the list effectively matches the user's request.
+        3. **SPECIFIC FILE**: If the user mentions a file by name, partial name, or keyword, identify the best match and return that ONE exact filename.
+        4. **COMPARE FILES**: If the user explicitly asks to compare **multiple different documents** (e.g. "compare file A and file B", "difference between X and Y"), return the exact filenames comma-separated.
+        5. **COMPARE PAGES/ACTIVE**: If the user asks to compare **pages, graphs, or sections** WITHOUT naming a specific file (e.g. "compare page 8 and 9", "compare the charts"), return ONLY the "Currently active file". Do NOT return multiple files.
+        6. **ALL FILES**: If user asks a question about "all files" (e.g. "summarize all files"), return "ALL_FILES".
+        7. **UNCERTAIN**: Return "None" only if no file in the list matches the user's request.
 
         Respond ONLY with the filename(s), "COMMAND_LIST", "COMMAND_DELETE: <exact_filename>", "ALL_FILES", or "None".
         """
@@ -182,16 +193,36 @@ async def ask_question(query: str = Form(...), user: dict = Depends(get_current_
     # --- ROBUST VALIDATION END ---
 
     # Handle "ALL_FILES" or fallbacks
-    if "ALL_FILES" in llm_raw or re.search(r"\b(compare|vs|versus|both|all files|all documents)\b", query, re.IGNORECASE):
+    # Check if this is a "Compare Files" request vs a "Compare Pages" request
+    is_global_compare = re.search(r"\b(all files|all documents)\b", query, re.IGNORECASE)
+    
+    # Only trigger 'compare' keyword if we didn't find specific page numbers
+    # (If user says 'compare page 1 and 2', we should stick to the inferred file, not search all)
+    if not page_num and not target_pages:
+         if re.search(r"\b(compare|vs|versus|both)\b", query, re.IGNORECASE):
+             is_global_compare = True
+
+    if "ALL_FILES" in llm_raw or is_global_compare:
         if not valid:
             valid = available_files[:]
 
     # Heuristics if model returns None/empty
     if not valid:
-        # If query looks like a compare request but LLM didn't list, fall back to all
-        if re.search(r"\b(compare|vs|versus|both|all files|all documents)\b", query, re.IGNORECASE):
+        # Check for specific "All Files" request
+        if re.search(r"\b(all files|all documents)\b", query, re.IGNORECASE):
             valid = available_files[:]
-        # Otherwise reuse active_file if available
+            
+        # Check for "Compare" keyword
+        elif re.search(r"\b(compare|vs|versus|both)\b", query, re.IGNORECASE):
+            # CRITICAL FIX: If we have specific target pages, we are comparing PAGES, not FILES.
+            # So we should use the ACTIVE file, not ALL files.
+            if target_pages and active_file:
+                valid = [active_file]
+            else:
+                # No pages specified? Then they probably mean "Compare File A vs File B" -> Search all
+                valid = available_files[:]
+                
+        # Fallback: Just use the active file
         elif active_file:
             valid = [active_file]
 
@@ -207,8 +238,6 @@ async def ask_question(query: str = Form(...), user: dict = Depends(get_current_
     print(f"[MATCH] Inferred files: {matched_files or 'None'}")
     print(f"[MATCH] Multi-file mode: {multi_file_mode}")
     print(f"[MATCH] Active file (memory): {active_file}")
-
-
 
     # --- Build metadata filter (single-file or multi-file) ---
     filters = {}
@@ -228,8 +257,18 @@ async def ask_question(query: str = Form(...), user: dict = Depends(get_current_
         filters = {}  # nothing inferred → allow wide search
 
     # Add optional page filter (applies to both single and multi-file cases)
-    if page_num is not None:
-        page_filter = {"$or": [{"page": page_num}, {"page": str(page_num)}]}
+    # Add optional page filter (supports multiple pages)
+    if target_pages:
+        # Build a massive OR condition for ALL targeted pages
+        # Matches: (page=1 OR page="1" OR page=2 OR page="2"...)
+        page_conditions = []
+        for p in target_pages:
+            page_conditions.append({"page": p})
+            page_conditions.append({"page": str(p)})
+            
+        page_filter = {"$or": page_conditions}
+        
+        # Combine with existing file filters via AND
         filters = {"$and": [filters, page_filter]} if filters else page_filter
 
     # Natural-language fallbacks that should open the filter up
@@ -246,32 +285,103 @@ async def ask_question(query: str = Form(...), user: dict = Depends(get_current_
 
     # Create appropriate query embedding
     query_embedding = await llm_client.get_embedding("page lookup" if page_num else query)
-    
-    # === If user requested a specific page, render PDF page to base64 ===
-    page_image_b64 = None
 
-    if page_num and matched_file:
+    # =========================================================================
+    # MOVED UP: RUN RETRIEVAL FIRST
+    # We query Chroma BEFORE rendering images so we know what to render
+    # =========================================================================
+    results = query_collection(
+        query_embeddings=[query_embedding],
+        where=filters if filters else None,
+        n_results=10,
+        include=["documents", "metadatas"]
+    )
+    
+    # Extract results immediately so we can use them for Vision logic
+    retrieved_metas = results.get("metadatas", [[]])[0]
+    retrieved_docs = results.get("documents", [[]])[0]
+
+    # Optional debug info (Moved here)
+    print(f"\n[DEBUG] Filters applied: {filters or 'None'}")
+    if matched_file:
+        print(f"Matched file: {matched_file}")
+
+    # =========================================================================
+    # SMART VISION TRIGGER
+    # KEYWORD RE-RANKING (Zero Token Cost)
+    # We check the text of the top 5 results. If one mentions a "Figure" or "Drawing",
+    # we prioritize it over a generic text page.
+    # =========================================================================
+    if not target_pages and retrieved_metas and retrieved_docs:
+        candidates = []
+        
+        # Look at the top 5 results
+        limit = min(5, len(retrieved_metas))
+        
+        for i in range(limit):
+            meta = retrieved_metas[i]
+            text = retrieved_docs[i] if i < len(retrieved_docs) else ""
+            
+            # 1. Base Score (Reverse Rank: #1 gets 5 points, #5 gets 1 point)
+            score = limit - i
+            
+            # 2. Visual Bonus (The "Secret Sauce")
+            # If the text mentions a diagram, it's highly likely the user wants to see it.
+            if re.search(r"(figure|fig\.|drawing|diagram|schematic|exploded view)", text, re.IGNORECASE):
+                score += 10  # Massive boost
+                print(f"[RE-RANK] Boosting Page {meta.get('page')} (Score +10) due to visual keywords.")
+
+            candidates.append({"meta": meta, "score": score})
+        
+        # Sort by Score (Descending)
+        candidates.sort(key=lambda x: x["score"], reverse=True)
+        
+        # Pick the winner
+        top_candidate = candidates[0]["meta"]
+        
+        # --- Standard Logic Continues ---
+        if top_candidate and "page" in top_candidate:
+            detected_page = top_candidate["page"]
+            detected_source = top_candidate.get("source")
+            
+            # Lock file context
+            if not matched_file:
+                matched_file = detected_source
+            
+            if matched_file == detected_source:
+                print(f"[AUTO-VISION] Re-ranker selected Page {detected_page}")
+                target_pages.append(int(detected_page))
+
+    # =========================================================================
+    # EXISTING LOGIC: RENDER IMAGES 
+    # (Now uses the updated target_pages from above!)
+    # =========================================================================
+    page_images = [] # Store list of base64 images
+
+    if target_pages and matched_file:
         uploads_dir = Path(__file__).resolve().parents[2] / "uploads"
         pdf_path = uploads_dir / matched_file
 
         if pdf_path.exists():
-            try:
-                base64_str = render_page_to_base64(str(pdf_path), page_num)
-                if base64_str:
-                    page_image_b64 = f"data:image/png;base64,{base64_str}"
-                    print(f"[VISION] Rendered page {page_num} for {matched_file}")
-                else:
-                    print(f"[VISION] Could not render page {page_num}")
-            except Exception as e:
-                print(f"[VISION ERROR] {e}")
-        else:
-            print(f"[VISION] PDF not found: {pdf_path}")
+            for p in target_pages:
+                try:
+                    # Now returns a list (Top, Bottom)
+                    image_slices = render_page_to_base64(str(pdf_path), p)
+                    
+                    if image_slices:
+                        for i, b64_str in enumerate(image_slices):
+                            page_images.append({
+                                "page": p,
+                                "b64": f"data:image/png;base64,{b64_str}",
+                                "slice_index": i # Use to label "Top" vs "Bottom"
+                            })
+                        print(f"[VISION] Rendered {len(image_slices) - 1} slices for page {p}")
+                    else:
+                        print(f"[VISION] Could not render page {p}")
+                except Exception as e:
+                    print(f"[VISION ERROR] Page {p}: {e}")
 
-
-
-    if re.search(r"\b(compare|both|all files)\b", query, re.IGNORECASE):
-        filters = {}  # disable filtering for cross-file questions
-
+    """
     # Query Chroma with these filters
     results = query_collection(
         query_embeddings=[query_embedding],
@@ -287,6 +397,7 @@ async def ask_question(query: str = Form(...), user: dict = Depends(get_current_
     if page_num:
         print(f"Matched page: {page_num}")
     print()
+    """
 
     # Chroma returns lists per query; we only have one query, so index 0
     retrieved_docs = results.get("documents", [[]])[0]
@@ -323,7 +434,7 @@ async def ask_question(query: str = Form(...), user: dict = Depends(get_current_
     # it means the page exists in the PDF but was skipped in the DB (Image-Only).
     # We should proceed and let the LLM see the image.
     if not retrieved_docs:
-        if page_image_b64 and matched_file and page_num:
+        if page_images and matched_file:
             # Create a fake "retrieved doc" so the pipeline continues
             retrieved_docs = ["(No text found. Analyzing attached page image.)"]
             retrieved_metas = [{
@@ -362,7 +473,7 @@ async def ask_question(query: str = Form(...), user: dict = Depends(get_current_
                     m[key] = file_index[fid][key]
 
     # Optional debug print
-    print("\n[Stage E] File index summary:")
+    print("\nFile index summary:")
     for fid, info in file_index.items():
         print(f"  {fid}: pages={info['pages']}, place={info['place']}, source={info['source']}")
     print()
@@ -443,6 +554,13 @@ async def ask_question(query: str = Form(...), user: dict = Depends(get_current_
         "When you reference or compare material, explicitly mention the Filename and Page numbers so sources are clear."
         "During comparisons across multiple documents, always attribute each point with 'Filename, Page N' based on the headers in the provided context."
         "You are allowed to use your knowlege as a librarian and scholar when providing answers on themes, or in comparisons"
+
+        "**STRICT FORMATTING RULES:**\n"
+        "1. **Do NOT use numbered lists** for specifications. Use **Markdown Tables** for all data, dimensions, and part lists.\n"
+        "2. **Use Bold Headers** for sections (e.g. `### Dimensions`).\n"
+        "3. **Use Natural Paragraphs** for explanations. Do not break every sentence into a bullet point.\n"
+        "4. **Grouping:** If you find a label (like 'A') and a value (like '38 inches'), keep them on the SAME line or in the SAME table row. Never split them into separate list items.\n"
+        "5. **Citations:** When referencing a specific page, use bold text (e.g. **Page 12**).\n\n"
     )
 
     # --- Define tools (functions) the LLM can call ---
@@ -487,7 +605,7 @@ async def ask_question(query: str = Form(...), user: dict = Depends(get_current_
     {query}
     """
 
-    print(f"\n{user_prompt}\n")
+    # print(f"\n{user_prompt}\n")
 
     # Ask the LLM with the grouped context
     messages = [
@@ -498,13 +616,46 @@ async def ask_question(query: str = Form(...), user: dict = Depends(get_current_
         {"type": "text", "text": user_prompt}
     ]
 
-    # Add image if page was specified
-    if page_image_b64:
+    # Add ALL rendered images
+    for img_data in page_images:
         user_content.append({
             "type": "image_url",
-            "image_url": {"url": page_image_b64} 
+            "image_url": {"url": img_data["b64"]} 
         })
+        
+        # Determine label based on slice_index
+        # Index 0 is the Full Page Map (added first in files_service)
+        # Index 1 is Top Slice, Index 2 is Bottom Slice
+        idx = img_data.get("slice_index", 0)
+        
+        if idx == 0:
+            label = "FULL PAGE OVERVIEW (Low Res)"
+            instruction = "Use this image to trace wires and understand the overall layout/topology. It preserves the complete paths."
+        elif idx == 1:
+            label = "TOP HALF DETAIL (High Res)"
+            instruction = "Use this image to read small text labels (pin names, component values) in the top section."
+        elif idx == 2:
+            label = "BOTTOM HALF DETAIL (High Res)"
+            instruction = "Use this image to read small text labels in the bottom section."
+        elif idx == 3:
+            label = "CENTER DETAIL (Best for Schematics)"
+            instruction = "This slice captures the middle of the page intact. Use this primarily for diagrams that are centered to avoid cut wires."
 
+        user_content.append({
+            "type": "text", 
+            "text": (
+                f"(Attached Image: Page {img_data['page']} - {label}).\n"
+                f"{instruction}\n"
+                "**STRICT VISUAL ANALYSIS RULES:**\n"
+                "1. **Topology:** Use the 'FULL PAGE OVERVIEW' to trace the wire path so you don't get lost at cut lines.\n"
+                "2. **Reading:** You MUST use the 'DETAIL' views to identify specific component labels (like Rs, R1) that are too small to see in the Overview.\n"
+                "3. **Connectivity Rules:**\n"
+                "   - Wires crossing WITHOUT a dot are NOT connected.\n"
+                "   - Wires meeting at a DOT are connected.\n"
+                "   - **Do not skip components:** If a wire passes through a component symbol (like a resistor) on its way to the output, you must list that component.\n"
+                "4. **Anti-Hallucination:** Do not connect components just because they are nearby (e.g. Rz, Cz). Only connect them if a wire clearly touches them."
+            )
+        })
     messages.append({"role": "user", "content": user_content})
 
     completion = await llm_client.chat(
@@ -514,7 +665,7 @@ async def ask_question(query: str = Form(...), user: dict = Depends(get_current_
         tool_choice="auto"
     )
 
-    print(f"Initial Context\n{context}\nAdditional Prompting:\n{system_message}\n")
+    # print(f"Initial Context\n{context}\nAdditional Prompting:\n{system_message}\n")
 
     # For traceability, also return which file IDs were included in the context
     included_files = [{"file_id": info.get("file_id"), "filename": info.get("source")} for info in grouped.values()]

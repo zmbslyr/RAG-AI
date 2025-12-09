@@ -47,35 +47,63 @@ def split_text_into_chunks(text: str):
     return splitter.split_text(text)
 
 # --- Helper: Returns png string for multimodal model ---
-def render_page_to_base64(pdf_path: str, page_number: int, zoom: float = 2.0) -> str:
+# app/services/files_service.py
+
+def render_page_to_base64(pdf_path: str, page_number: int, zoom: float = 3.0) -> list[str]:
     """
-    Opens a PDF, renders a specific page to an image, and returns a base64 string.
-    page_number is 1-indexed (what humans/your DB use), so we convert to 0-indexed.
+    Returns a list of base64 images:
+    Index 0: The FULL PAGE (The 'Map') - moderate resolution, preserves topology.
+    Index 1+: The SLICES (The 'Magnifiers') - max resolution, for reading tiny labels.
     """
+    images = []
     try:
         doc = fitz.open(pdf_path)
-        # Convert 1-based page number to 0-based index
         page_index = page_number - 1
         
         if page_index < 0 or page_index >= len(doc):
-            return None
+            return []
 
         page = doc.load_page(page_index)
+        rect = page.rect
+
+        # --- 1. Generate the "Map" (Full Page) ---
+        # We target ~2000px height to fit OpenAI's vision limit without hidden downscaling
+        # Standard PDF is ~842pts high. 2.0 zoom = ~1684px.
+        map_zoom = 2.0 
+        mat_map = fitz.Matrix(map_zoom, map_zoom)
+        pix_map = page.get_pixmap(matrix=mat_map)
+        img_bytes_map = pix_map.tobytes("png")
+        images.append(base64.b64encode(img_bytes_map).decode("utf-8"))
+
+        # --- 2. Generate the "Slices" (High Res Detail) ---
+        # High zoom for reading tiny text labels
+        mat_slice = fitz.Matrix(zoom, zoom) # zoom is 3.0 passed in args
         
-        # Matrix(2, 2) = 2x zoom. This is CRITICAL. 
-        # Default resolution is 72 DPI (blurry). 2x gives ~150 DPI (readable schematics).
-        pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom))
+        mid_y = rect.height / 2
+        overlap = 250
         
-        # Get image bytes directly (no file save needed)
-        img_bytes = pix.tobytes("png")
-        
-        # Encode to base64
-        base64_str = base64.b64encode(img_bytes).decode("utf-8")
-        return base64_str
+        clips = [
+            # Index 1: Top Half
+            fitz.Rect(0, 0, rect.width, mid_y + overlap),
+            
+            # Index 2: Bottom Half
+            fitz.Rect(0, mid_y - overlap, rect.width, rect.height),
+            
+            # Index 3: MIDDLE SLICE
+            # Captures the middle 60% of the page intact (from 20% down to 80%)
+            fitz.Rect(0, rect.height * 0.20, rect.width, rect.height * 0.80)
+        ]
+
+        for clip in clips:
+            pix = page.get_pixmap(matrix=mat_slice, clip=clip)
+            img_bytes = pix.tobytes("png")
+            images.append(base64.b64encode(img_bytes).decode("utf-8"))
+            
+        return images
         
     except Exception as e:
         print(f"Error rendering page: {e}")
-        return None
+        return []
     finally:
         if 'doc' in locals():
             doc.close()
