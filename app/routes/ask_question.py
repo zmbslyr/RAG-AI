@@ -6,17 +6,19 @@ import json
 import markdown
 from difflib import get_close_matches
 from pathlib import Path
-import urllib.parse
+from sqlalchemy.orm import Session
 
 # Local Imports
 from app.services.llm_service import llm_client
 from app.services.chroma_service import query_collection
-from app.memory import session_memory, get_session_context, update_session_memory, get_last_active_file, set_last_active_file
+from app.memory import get_session_context, update_session_memory, get_last_active_file, set_last_active_file
 from app.services.files_service import render_page_to_base64
 from app.routes.list_files import list_files
 from app.routes.debug_metadata import debug_metadata
 from app.routes.delete_file import delete_file as delete_file_func
 from app.routes.auth import get_current_user
+from app.core.deps import get_db
+from app.core import db as db_core
 
 # --- Helper to normalize filename to file_id ---
 def to_file_id(filename: str) -> str:
@@ -43,12 +45,21 @@ router = APIRouter()
 
 # --- Route: ask question ---
 @router.post("/ask")
-async def ask_question(query: str = Form(...), user: dict = Depends(get_current_user)):
+async def ask_question(
+    query: str = Form(...),
+    user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
 
     # --- Conversation memory setup ---
     # Generate or retrieve a session ID (in production, send from frontend)
-    session_id = "default"  # Replace later with client-provided ID if desired
-    prior_context = get_session_context(session_id)
+    username = user.get("username", "unknown_user")
+    session_id = f"{username}-{db_core.ACTIVE_DB_NAME}"
+    prior_context = get_session_context(db, session_id)
+
+    # --- DEBUG PRINT ---
+    print(f"[ROUTE DEBUG] Prior Context Length: {len(prior_context)}")
+    # -------------------
 
     # Track which file should be "active" this round
     active_file = get_last_active_file(session_id)
@@ -103,13 +114,14 @@ async def ask_question(query: str = Form(...), user: dict = Depends(get_current_
         Currently active file: {active_file or 'None'}
 
         Rules:
-        1. **LIST COMMAND**: If the user is asking to list, show, or display all available files (e.g. 'list files', 'what do you have', 'show inventory', 'how many files'), respond with exactly "COMMAND_LIST".
-        2. **DELETE COMMAND**: If the user explicitly asks to delete, remove, or erase a file, identify the closest filename from the list and respond with "COMMAND_DELETE: <exact_filename>".
-        3. **SPECIFIC FILE**: If the user mentions a file by name, partial name, or keyword, identify the best match and return that ONE exact filename.
-        4. **COMPARE FILES**: If the user explicitly asks to compare **multiple different documents** (e.g. "compare file A and file B", "difference between X and Y"), return the exact filenames comma-separated.
-        5. **COMPARE PAGES/ACTIVE**: If the user asks to compare **pages, graphs, or sections** WITHOUT naming a specific file (e.g. "compare page 8 and 9", "compare the charts"), return ONLY the "Currently active file". Do NOT return multiple files.
-        6. **ALL FILES**: If user asks a question about "all files" (e.g. "summarize all files"), return "ALL_FILES".
-        7. **UNCERTAIN**: Return "None" only if no file in the list matches the user's request.
+        1. **PRIORITIZE THE NEW QUESTION.** If the user mentions a different file than the Active File, you MUST return the new filename, unless the user is asking for a comparison. Ignore the previous context.
+        2. **LIST COMMAND**: If the user is asking to list, show, or display all available files (e.g. 'list files', 'what do you have', 'show inventory', 'how many files'), respond with exactly "COMMAND_LIST".
+        3. **DELETE COMMAND**: If the user explicitly asks to delete, remove, or erase a file, identify the closest filename from the list and respond with "COMMAND_DELETE: <exact_filename>".
+        4. **SPECIFIC FILE**: If the user mentions a file by name, partial name, or keyword, identify the best match and return that ONE exact filename.
+        5. **COMPARE FILES**: If the user explicitly asks to compare **multiple different documents** (e.g. "compare file A and file B", "difference between X and Y"), return the exact filenames comma-separated.
+        6. **COMPARE PAGES/ACTIVE**: If the user asks to compare **pages, graphs, or sections** WITHOUT naming a specific file (e.g. "compare page 8 and 9", "compare the charts"), return ONLY the "Currently active file". Do NOT return multiple files.
+        7. **ALL FILES**: If user asks a question about "all files" (e.g. "summarize all files"), return "ALL_FILES".
+        8. **UNCERTAIN**: Return "None" only if no file in the list matches the user's request.
 
         Respond ONLY with the filename(s), "COMMAND_LIST", "COMMAND_DELETE: <exact_filename>", "ALL_FILES", or "None".
         """
@@ -120,6 +132,39 @@ async def ask_question(query: str = Form(...), user: dict = Depends(get_current_
     )
     llm_raw = (inference.choices[0].message.content or "").strip()
     print(f"[LLM FILE INFERENCE RAW] {llm_raw}")
+
+    # Only run this if the LLM failed (returned None)
+    if "None" in llm_raw and "ALL_FILES" not in llm_raw:
+        normalized_query = query.lower()
+        
+        # 1. Define "Risky" words to ignore (Common adjectives/nouns in titles)
+        #    "great" prevents "Is it great?" -> Gatsby
+        #    "case" prevents "In this case..." -> Dr. Jekyll
+        risky_words = {
+            "the", "a", "an", "of", "in", "and", "or", "to", "for", "file", "pdf", 
+            "book", "story", "about", "what", "happens", "is", "does", "great", 
+            "strange", "case", "study", "legend", "island", "doctor", "guide"
+        }
+
+        detected_by_python = []
+        for fname in available_files:
+            # Clean filename: "The-Great-Gatsby.pdf" -> ["great", "gatsby"]
+            clean_name = Path(fname).stem.lower().replace("-", " ").replace("_", " ")
+            parts = clean_name.split()
+            
+            # Only match against "Strong" unique words
+            strong_keywords = [w for w in parts if w not in risky_words and len(w) > 3]
+            
+            for kw in strong_keywords:
+                # If the user typed a "Strong" word (e.g. "Gatsby", "Moreau", "Hollow")
+                if kw in normalized_query:
+                    detected_by_python.append(fname)
+                    break
+        
+        # If we found a specific strong match, override the LLM's "None"
+        if detected_by_python:
+            print(f"[RESCUE] LLM said None, but found strong keywords: {detected_by_python}")
+            llm_raw = ",".join(detected_by_python)
 
     # === INTERCEPTOR: LIST FILES ===
     if "COMMAND_LIST" in llm_raw:
@@ -781,7 +826,7 @@ async def ask_question(query: str = Form(...), user: dict = Depends(get_current_
         final_html = answer_html + sources_html
 
     # Update session memory
-    update_session_memory(session_id, query, answer_markdown)
+    update_session_memory(db, session_id, query, answer_markdown)
 
     return JSONResponse({
         "answer": final_html,
