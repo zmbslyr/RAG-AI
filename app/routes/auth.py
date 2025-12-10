@@ -1,6 +1,6 @@
 # app/routes/auth.py
 import os
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Request
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from passlib.context import CryptContext
 from jose import JWTError, jwt
@@ -27,7 +27,7 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 60
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/token")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/token", auto_error=False)
 
 # === Helpers ===
 def get_user(db: Session, username: str):
@@ -95,7 +95,17 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = 
     )
     return {"access_token": access_token, "token_type": "bearer"}
 
-async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
+async def get_current_user(
+    request: Request, 
+    token: Optional[str] = Depends(oauth2_scheme), 
+    db: Session = Depends(get_db)
+):
+    # Check header for token, if not found, checks cookies for access token
+    if not token:
+        token = request.cookies.get("access_token")
+    if not token:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+    
     """Extract and verify current user from JWT token."""
     try:
         payload = jwt.decode(token, settings.JWT_SECRET, algorithms=[ALGORITHM])

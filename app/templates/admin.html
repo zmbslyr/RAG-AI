@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Developer Control Panel</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <style>
+        body { background: #f3f4f6; color: #1f2937; padding: 20px; overflow-y: auto; }
+        .container { max-width: 1000px; margin: 0 auto; }
+        .card { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); margin-bottom: 20px; }
+        h2 { margin-top: 0; border-bottom: 1px solid #eee; padding-bottom: 10px; font-size: 1.2rem; color: #2d6cdf; }
+        
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 0.9rem; }
+        th, td { text-align: left; padding: 10px; border-bottom: 1px solid #eee; }
+        th { background: #f9fafb; font-weight: 600; }
+        
+        .btn { padding: 6px 12px; border: none; border-radius: 4px; cursor: pointer; font-size: 0.85rem; }
+        .btn-red { background: #ef4444; color: white; }
+        .btn-green { background: #10b981; color: white; }
+        .btn-blue { background: #2d6cdf; color: white; }
+        .btn:hover { opacity: 0.9; }
+
+        input[type="text"] { padding: 6px; border: 1px solid #ccc; border-radius: 4px; font-size: 0.9rem; }
+
+        /* Scrollable Logs - Taller and fixed height */
+        #logContainer {
+            height: 600px; 
+            overflow-y: scroll; 
+            background: #2f3136;
+            border-radius: 6px;
+            padding: 10px;
+            border: 1px solid #ccc;
+        }
+        .log-entry { font-family: monospace; font-size: 0.85rem; color: #eee; padding: 8px; border-bottom: 1px solid #444; }
+        .log-entry:last-child { border-bottom: none; }
+        .meta { color: #9ca3af; font-size: 0.75rem; display: block; margin-bottom: 4px; }
+        .role-tag { display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 0.7rem; font-weight: bold; text-transform: uppercase; margin-right: 5px;}
+        .role-user { background: #4b5563; color: white; }
+        .role-assistant { background: #2d6cdf; color: white; }
+
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px;">
+            <h1>🛠️ Developer Control Panel</h1>
+            <a href="/" class="btn btn-blue">Back to App</a>
+        </header>
+
+        <div class="card">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+                <h2>Database Management</h2>
+                <button onclick="refreshDatabases()" class="btn btn-blue">Refresh</button>
+            </div>
+
+            <div style="display:flex; gap:10px; align-items:center; margin-top:15px; background:#f9fafb; padding:10px; border-radius:6px;">
+                <input type="text" id="newDbName" placeholder="New DB Name (e.g. project_alpha)" style="flex:1;">
+                <button onclick="createDatabase()" class="btn btn-green">Create</button>
+            </div>
+            
+            <table id="dbTable" style="margin-top:15px;">
+                <thead><tr><th>Database Name</th><th>Status</th><th>Actions</th></tr></thead>
+                <tbody></tbody>
+            </table>
+        </div>
+
+        <div class="card">
+            <div style="display:flex; justify-content:space-between;">
+                <h2>User Management</h2>
+                <button onclick="refreshUsers()" class="btn btn-blue">Refresh</button>
+            </div>
+
+            <div style="display:flex; gap:10px; align-items:center; margin-top:15px; background:#f9fafb; padding:10px; border-radius:6px;">
+                <input type="text" id="newUserName" placeholder="Username" style="flex:1;">
+                <input type="text" id="newUserPass" placeholder="Password" style="flex:1;">
+                <select id="newUserRole">
+                    <option value="user">User</option>
+                    <option value="admin">Admin</option>
+                </select>
+                <button onclick="createUser()" class="btn btn-green">Add User</button>
+            </div>
+
+            <table id="userTable">
+                <thead><tr><th>ID</th><th>Username</th><th>Role</th><th>Created</th><th>Actions</th></tr></thead>
+                <tbody></tbody>
+            </table>
+        </div>
+
+        <div class="card">
+             <div style="display:flex; justify-content:space-between; margin-bottom:10px;">
+                <h2>Recent Chat Logs (Active DB)</h2>
+                <div>
+                    <button onclick="refreshLogs()" class="btn btn-blue">Refresh</button>
+                    <button onclick="clearLogs()" class="btn btn-red">Clear Logs</button>
+                </div>
+            </div>
+            <div id="logContainer"></div>
+        </div>
+
+        <div class="card" style="border: 1px solid #fca5a5;">
+            <h2 style="color: #dc2626;">⚠️ Danger Zone</h2>
+            <p>These actions are irreversible.</p>
+            <div style="display:flex; gap:10px; margin-top:10px;">
+                <button onclick="resetChroma()" class="btn btn-red">Wipe All Vector Data (Chroma)</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const token = localStorage.getItem("authToken");
+        if (!token) window.location.href = "/";
+
+        const headers = { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" };
+
+        async function api(url, method="GET", body=null) {
+            const opts = { method, headers };
+            if (body) opts.body = JSON.stringify(body);
+            
+            const res = await fetch(url, opts);
+            const data = await res.json();
+            
+            if (!res.ok) { 
+                alert("Error: " + (data.detail || "Action failed")); 
+                return null; 
+            }
+            return data;
+        }
+
+        // --- DATABASE FUNCTIONS ---
+        async function refreshDatabases() {
+            const dbs = await api("/admin/databases");
+            if (!dbs) return;
+
+            // Get active DB name to mark it
+            const activeRes = await fetch("/active_database", { headers });
+            const activeData = await activeRes.json();
+            const activeName = activeData.active;
+
+            const tbody = document.querySelector("#dbTable tbody");
+            tbody.innerHTML = dbs.map(name => {
+                const isActive = (name === activeName);
+                return `
+                <tr style="${isActive ? 'background:#eff6ff;' : ''}">
+                    <td><strong>${name}</strong></td>
+                    <td>${isActive ? '<span style="color:#2d6cdf; font-weight:bold;">ACTIVE</span>' : '<span style="color:#9ca3af;">Inactive</span>'}</td>
+                    <td>
+                        ${isActive ? 
+                        '<span style="color:#aaa; font-size:0.8rem;">Cannot Delete (Active)</span>' : 
+                        `<div style="display:flex; gap:5px;">
+                            <button onclick="setActiveDatabase('${name}')" class="btn btn-green">Switch to</button>
+                            <button onclick="deleteDatabase('${name}')" class="btn btn-red">Delete</button>
+                         </div>`}
+                    </td>
+                </tr>
+            `}).join("");
+        }
+
+        async function createDatabase() {
+            const name = document.getElementById("newDbName").value;
+            if (!name) return alert("Please enter a name");
+            
+            const res = await api("/admin/create_database", "POST", { name });
+            if (res) {
+                alert(res.message);
+                document.getElementById("newDbName").value = "";
+                refreshDatabases(); // Auto refresh list
+            }
+        }
+
+        async function setActiveDatabase(name) {
+            if(!confirm(`Switch the entire server to database "${name}"?`)) return;
+            // Calls the existing endpoint in main.py
+            const res = await api(`/set_database?name=${name}`, "POST");
+            if (res) {
+                alert(res.message);
+                refreshDatabases();
+                refreshLogs(); // Logs will change because the DB changed
+            }
+        }
+
+        async function deleteDatabase(name) {
+            if(!confirm(`Permanently delete database "${name}"? This destroys all vector data inside it.`)) return;
+            await api(`/admin/databases/${name}`, "DELETE");
+            refreshDatabases();
+        }
+
+        // --- USER FUNCTIONS ---
+        async function refreshUsers() {
+            const users = await api("/admin/users");
+            if (!users) return;
+            const tbody = document.querySelector("#userTable tbody");
+            tbody.innerHTML = users.map(u => `
+                <tr>
+                    <td>${u.id}</td>
+                    <td>${u.username}</td>
+                    <td>${u.role}</td>
+                    <td>${new Date(u.created_at).toLocaleString()}</td>
+                    <td>
+                        ${u.username !== 'admin' ? 
+                        `<div style="display:flex; gap:5px;">
+                           <button onclick="deleteUser(${u.id})" class="btn btn-red">Delete</button>
+                           ${u.role !== 'admin' ? `<button onclick="promoteUser(${u.id})" class="btn btn-green">Promote</button>` : ''}
+                         </div>` : 
+                        '<span style="color:#aaa">Protected</span>'}
+                    </td>
+                </tr>
+            `).join("");
+        }
+
+        async function createUser() {
+            const username = document.getElementById("newUserName").value;
+            const password = document.getElementById("newUserPass").value;
+            const role = document.getElementById("newUserRole").value;
+
+            if (!username || !password) return alert("Username and Password are required.");
+
+            const res = await api("/admin/users", "POST", { username, password, role });
+            if (res) {
+                alert(res.message);
+                // Clear inputs
+                document.getElementById("newUserName").value = "";
+                document.getElementById("newUserPass").value = "";
+                refreshUsers();
+            }
+        }
+
+        async function deleteUser(id) {
+            if(!confirm("Are you sure you want to delete this user?")) return;
+            await api(`/admin/users/${id}`, "DELETE");
+            refreshUsers();
+        }
+
+        async function promoteUser(id) {
+            if(!confirm("Promote this user to Admin?")) return;
+            await api(`/admin/users/${id}/promote`, "PUT");
+            refreshUsers();
+        }
+
+        // --- LOG FUNCTIONS ---
+        async function refreshLogs() {
+            // Fetch Logs
+            const logs = await api("/admin/logs");
+            if (!logs) return;
+
+            // Fetch Active DB Name (Expected suffix)
+            const activeRes = await fetch("/active_database", { headers });
+            const activeData = await activeRes.json();
+            const activeSuffix = "-" + activeData.active;
+
+            const container = document.getElementById("logContainer");
+            if (logs.length === 0) {
+                container.innerHTML = "<p style='color:#bbb; text-align:center; padding:20px;'>No logs found for the active database.</p>";
+                return;
+            }
+
+            container.innerHTML = logs.map(l => {
+                const roleClass = l.role === 'user' ? 'role-user' : 'role-assistant';
+                
+                // --- USERNAME LOGIC ---
+                let displayName = "AI"; // Default for assistant
+                if (l.role === 'user') {
+                    // If session is "mike-books" and suffix is "-books", result is "mike"
+                    if (l.session_id && l.session_id.endsWith(activeSuffix)) {
+                        displayName = l.session_id.slice(0, -activeSuffix.length);
+                    } else {
+                        displayName = "USER"; // Fallback
+                    }
+                }
+                // ----------------------
+
+                // Timezone Fix
+                let timeStr = l.timestamp;
+                if (!timeStr.endsWith("Z") && !timeStr.includes("+")) {
+                    timeStr += "Z";
+                }
+                const localTime = new Date(timeStr).toLocaleString();
+
+                return `
+                <div class="log-entry">
+                    <span class="meta">${localTime} | Session: ${l.session_id}</span>
+                    <span class="role-tag ${roleClass}">${displayName}</span>
+                    ${l.content.replace(/</g, "&lt;")}
+                </div>
+            `}).join("");
+        }
+
+        async function clearLogs() {
+            if(!confirm("Clear all chat history for this project?")) return;
+            await api("/admin/logs", "DELETE");
+            refreshLogs();
+        }
+
+        async function resetChroma() {
+            const code = prompt("Type 'DELETE' to confirm wiping all vectors:");
+            if (code !== "DELETE") return;
+            await api("/admin/reset_chroma", "DELETE");
+            alert("Vector database wiped.");
+        }
+
+        // Init
+        refreshDatabases();
+        refreshUsers();
+        refreshLogs();
+    </script>
+</body>
+</html>

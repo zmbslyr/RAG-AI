@@ -38,6 +38,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
           // Clear client state and reload
           localStorage.removeItem("authToken");
+          document.cookie = "access_token=; path=/; max-age=0";
           window.location.reload();
       });
   }
@@ -195,6 +196,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       if (res.ok && data.access_token) {
         authToken = data.access_token;
         localStorage.setItem("authToken", authToken);
+        document.cookie = `access_token=${authToken}; path=/; max-age=3600; SameSite=Lax`;
         hideLogin();
         applyRoleUI();
         loadDatabasesUI();
