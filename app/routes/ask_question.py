@@ -137,7 +137,7 @@ async def ask_question(
     if "None" in llm_raw and "ALL_FILES" not in llm_raw:
         normalized_query = query.lower()
         
-        # 1. Define "Risky" words to ignore (Common adjectives/nouns in titles)
+        #    Define "Risky" words to ignore (Common adjectives/nouns in titles)
         #    "great" prevents "Is it great?" -> Gatsby
         #    "case" prevents "In this case..." -> Dr. Jekyll
         risky_words = {
@@ -259,8 +259,6 @@ async def ask_question(
             
         # Check for "Compare" keyword
         elif re.search(r"\b(compare|vs|versus|both)\b", query, re.IGNORECASE):
-            # CRITICAL FIX: If we have specific target pages, we are comparing PAGES, not FILES.
-            # So we should use the ACTIVE file, not ALL files.
             if target_pages and active_file:
                 valid = [active_file]
             else:
@@ -367,10 +365,9 @@ async def ask_question(
             meta = retrieved_metas[i]
             text = retrieved_docs[i] if i < len(retrieved_docs) else ""
             
-            # 1. Base Score (Reverse Rank: #1 gets 5 points, #5 gets 1 point)
+            # Base Score (Reverse Rank: #1 gets 5 points, #5 gets 1 point)
             score = limit - i
             
-            # 2. Visual Bonus (The "Secret Sauce")
             # If the text mentions a diagram, it's highly likely the user wants to see it.
             if re.search(r"(figure|fig\.|drawing|diagram|schematic|exploded view)", text, re.IGNORECASE):
                 score += 10  # Massive boost
@@ -398,8 +395,7 @@ async def ask_question(
                 target_pages.append(int(detected_page))
 
     # =========================================================================
-    # EXISTING LOGIC: RENDER IMAGES 
-    # (Now uses the updated target_pages from above!)
+    # RENDER IMAGES 
     # =========================================================================
     page_images = [] # Store list of base64 images
 
@@ -410,7 +406,7 @@ async def ask_question(
         if pdf_path.exists():
             for p in target_pages:
                 try:
-                    # Now returns a list (Top, Bottom)
+                    # returns a list (Top, Bottom)
                     image_slices = render_page_to_base64(str(pdf_path), p)
                     
                     if image_slices:

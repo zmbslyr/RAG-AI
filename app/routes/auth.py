@@ -68,8 +68,8 @@ async def register(payload: RegisterRequest, db: Session = Depends(get_db)):
     )
     # Transaction
     db.add(new_user)
-    db.commit()      # Saves to app.db
-    db.refresh(new_user) # Reloads attributes (like auto-generated ID)
+    db.commit()             # Saves to app.db
+    db.refresh(new_user)    # Reloads attributes (like auto-generated ID)
 
     print(f"""
         User: {username} created.

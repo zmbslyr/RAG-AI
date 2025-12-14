@@ -22,13 +22,13 @@ router = APIRouter(prefix="/admin", tags=["admin"])
 BASE_DIR = Path(__file__).resolve().parent.parent
 templates = Jinja2Templates(directory=BASE_DIR / "templates")
 
-# --- 1. Serve the UI ---
+# --- Serve the UI ---
 @router.get("/", response_class=HTMLResponse)
 async def admin_panel(request: Request, user=Depends(require_admin)):
     """Serve the Admin HTML page (Admins only)."""
     return templates.TemplateResponse("admin.html", {"request": request, "user": user})
 
-# --- 2. User Management ---
+# --- User Management ---
 @router.get("/users")
 async def list_users(db: Session = Depends(get_db), user=Depends(require_admin)):
     users = db.query(models.User).all()
@@ -160,7 +160,7 @@ async def clear_logs(db: Session = Depends(get_db), user=Depends(require_admin))
     db.commit()
     return {"message": "Chat logs cleared for active database."}
 
-# --- 5. Danger Zone ---
+# --- Danger Zone ---
 @router.delete("/reset_chroma")
 async def reset_chroma(user=Depends(require_admin)):
     """Delete ALL files in the Chroma Vector DB."""

@@ -47,8 +47,6 @@ def split_text_into_chunks(text: str):
     return splitter.split_text(text)
 
 # --- Helper: Returns png string for multimodal model ---
-# app/services/files_service.py
-
 def render_page_to_base64(pdf_path: str, page_number: int, zoom: float = 3.0) -> list[str]:
     """
     Returns a list of base64 images:
@@ -66,7 +64,7 @@ def render_page_to_base64(pdf_path: str, page_number: int, zoom: float = 3.0) ->
         page = doc.load_page(page_index)
         rect = page.rect
 
-        # --- 1. Generate the "Map" (Full Page) ---
+        # --- Generate the "Map" (Full Page) ---
         # We target ~2000px height to fit OpenAI's vision limit without hidden downscaling
         # Standard PDF is ~842pts high. 2.0 zoom = ~1684px.
         map_zoom = 2.0 
@@ -75,7 +73,7 @@ def render_page_to_base64(pdf_path: str, page_number: int, zoom: float = 3.0) ->
         img_bytes_map = pix_map.tobytes("png")
         images.append(base64.b64encode(img_bytes_map).decode("utf-8"))
 
-        # --- 2. Generate the "Slices" (High Res Detail) ---
+        # --- Generate the "Slices" (High Res Detail) ---
         # High zoom for reading tiny text labels
         mat_slice = fitz.Matrix(zoom, zoom) # zoom is 3.0 passed in args
         

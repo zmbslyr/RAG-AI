@@ -43,7 +43,7 @@ def update_session_memory(db: Session, session_id: str, user_text: str, assistan
     """
     Save the new turn (User + Assistant) to the database.
     """
-    # 1. Create User Message
+    # Create User Message
     user_msg = models.ChatHistory(
         session_id=session_id,
         role="user",
@@ -51,7 +51,7 @@ def update_session_memory(db: Session, session_id: str, user_text: str, assistan
     )
     db.add(user_msg)
     
-    # 2. Create Assistant Message
+    # Create Assistant Message
     asst_msg = models.ChatHistory(
         session_id=session_id,
         role="assistant",
