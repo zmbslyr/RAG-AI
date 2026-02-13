@@ -13,4 +13,4 @@ markdown
 passlib
 python-jose[cryptography]
 pydantic_settings
-pymupdf4llm
+sqlalchemy
